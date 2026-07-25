@@ -10,6 +10,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from . import theme
+from .contracts import SEVERITY_ORDER
 
 _TEMPLATE = theme.PLOTLY_TEMPLATE
 
@@ -33,6 +34,55 @@ def empty_figure(message: str = "No data yet", *, height: int = 300) -> go.Figur
     )
     fig.update_xaxes(visible=False)
     fig.update_yaxes(visible=False)
+    return _base(fig, height=height)
+
+
+def alert_activity_timeline(
+    timeline: pd.DataFrame | None, *, height: int = 320
+) -> go.Figure:
+    """Stacked alert counts over time, coloured by severity."""
+    if timeline is None or timeline.empty:
+        return empty_figure("Alert activity timeline appears once alerts are available",
+                            height=height)
+    pivot = timeline.pivot_table(
+        index="timestamp", columns="severity", values="count", aggfunc="sum", fill_value=0
+    )
+    for severity in SEVERITY_ORDER:
+        if severity not in pivot.columns:
+            pivot[severity] = 0
+    pivot = pivot[[s for s in SEVERITY_ORDER if s in pivot.columns]]
+
+    fig = go.Figure()
+    for severity in pivot.columns:
+        fig.add_trace(
+            go.Bar(
+                x=pivot.index,
+                y=pivot[severity],
+                name=severity,
+                marker_color=theme.severity_color(severity),
+            )
+        )
+    fig.update_layout(barmode="stack")
+    fig.update_xaxes(title="time")
+    fig.update_yaxes(title="alerts", rangemode="tozero")
+    return _base(fig, height=height, title="Threat activity over time")
+
+
+def entity_type_distribution(
+    counts: dict[str, int] | None, *, height: int = 280
+) -> go.Figure:
+    if not counts:
+        return empty_figure("Entity distribution appears once entities are registered",
+                            height=height)
+    labels = list(counts.keys())
+    fig = go.Figure(
+        go.Bar(
+            x=labels,
+            y=[counts[k] for k in labels],
+            marker=dict(color=theme.ACCENT),
+        )
+    )
+    fig.update_yaxes(rangemode="tozero", title="entities")
     return _base(fig, height=height)
 
 

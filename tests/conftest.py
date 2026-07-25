@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from src.config import load_config
+from src.evaluation.report import metrics_dir
 
 _REDIRECTED = ("data_raw", "data_processed", "data_generated", "models", "artifacts")
 
@@ -30,3 +31,41 @@ def isolated_workspace(tmp_path_factory):
         cfg._data["paths"][key] = str(target)
     yield root
     cfg._data["paths"].update(original)
+
+
+def clear_metrics_artifacts() -> None:
+    """Remove evaluation JSON artifacts from the isolated workspace."""
+    folder = metrics_dir()
+    if folder.exists():
+        for path in folder.glob("*.json"):
+            path.unlink(missing_ok=True)
+
+
+def clear_pipeline_artifacts() -> None:
+    """Remove on-disk pipeline artifacts created during tests."""
+    from src.artifacts import REGISTRY
+
+    for item in REGISTRY.values():
+        path = item.path
+        if path.exists():
+            path.unlink(missing_ok=True)
+
+
+@pytest.fixture(autouse=True)
+def _clean_metrics_between_tests(request: pytest.FixtureRequest):
+    """Drop metrics artifacts unless the test explicitly retains them."""
+    retain = "retain_metrics_artifact" in request.keywords
+    clear_pipeline_artifacts()
+    if not retain:
+        clear_metrics_artifacts()
+    yield
+    clear_pipeline_artifacts()
+    if not retain:
+        clear_metrics_artifacts()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "retain_metrics_artifact: keep evaluation metrics JSON for this test",
+    )

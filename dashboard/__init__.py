@@ -11,6 +11,17 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import alerts, entity_view, overview, performance, simulator
+from .data_provider import (
+    AlertQueueFilters,
+    AlertQueueSummary,
+    CampaignPerformanceSummary,
+    DashboardDataProvider,
+    EntityBehaviorProfile,
+    EntityInvestigationSummary,
+    OverviewKPIs,
+    PerformanceKPIs,
+    get_provider,
+)
 from .state import DashboardContext, get_context
 
 
@@ -33,10 +44,19 @@ PAGES_BY_LABEL: dict[str, Page] = {page.label: page for page in PAGES}
 
 __all__ = [
     "DashboardContext",
+    "DashboardDataProvider",
+    "AlertQueueFilters",
+    "AlertQueueSummary",
+    "CampaignPerformanceSummary",
+    "EntityBehaviorProfile",
+    "EntityInvestigationSummary",
+    "OverviewKPIs",
+    "PerformanceKPIs",
     "PAGES",
     "PAGES_BY_LABEL",
     "Page",
     "get_context",
+    "get_provider",
     "alerts",
     "entity_view",
     "overview",

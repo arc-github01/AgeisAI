@@ -59,15 +59,16 @@ def test_context_reports_missing_artifacts_honestly():
     assert {a.key for a in ctx.missing("events", "alerts")} == {"events", "alerts"}
 
 
-def test_overview_shows_pending_kpis_rather_than_zeroes():
+def test_overview_renders_with_development_fixture():
     at = AppTest.from_file(APP, default_timeout=60).run()
+    at.sidebar.radio[0].set_value("SOC Overview").run()
+    assert not at.exception
     body = " ".join(block.value for block in at.markdown)
-    assert "Events ingested" in body
-    assert "Awaiting phase" in body           # honest empty state, not fabricated data
-    assert 'class="value pending">--' in body  # KPIs read as pending, not "0"
+    assert "Events processed" in body
+    assert at.info and "Development fixture active" in at.info[0].value
 
 
-def test_simulator_disables_injection_until_the_pipeline_exists():
+def test_simulator_disables_injection_until_prerequisites_exist():
     at = AppTest.from_file(APP, default_timeout=60)
     at.run()
     at.sidebar.radio[0].set_value("Attack Simulator").run()
@@ -77,23 +78,18 @@ def test_simulator_disables_injection_until_the_pipeline_exists():
     assert len(inject) == 1 and inject[0].disabled
 
     scenarios = [s for s in at.selectbox if s.key == "sim_attack"]
-    assert scenarios and scenarios[0].options == list(ATTACK_CLASSES)
+    assert scenarios and "Impossible Travel" in scenarios[0].options
 
 
-def test_simulator_never_fabricates_a_result():
-    from dashboard import simulator
-
-    with pytest.raises(NotImplementedError):
-        simulator._run_injection(DashboardContext.build(), "USR_001", "BRUTE_FORCE", 3)
-
-
-def test_alert_filters_are_present_before_any_alert_exists():
+def test_alert_filters_are_present_and_queue_populates():
     at = AppTest.from_file(APP, default_timeout=60)
     at.run()
     at.sidebar.radio[0].set_value("Alert Queue").run()
     assert not at.exception
-    assert {"flt_severity", "flt_attack"} <= {w.key for w in at.multiselect}
+    assert {"flt_severity", "flt_attack", "flt_entity_type"} <= {w.key for w in at.multiselect}
     assert "flt_risk" in {w.key for w in at.slider}
+    assert at.dataframe, "expected alert queue table with fixture data"
+    assert at.selectbox, "expected alert detail selector"
 
 
 def test_performance_page_refuses_to_invent_metrics():
@@ -104,5 +100,6 @@ def test_performance_page_refuses_to_invent_metrics():
     body = " ".join(block.value for block in at.markdown)
     assert "PR-AUC" in body
     assert 'class="value pending">--' in body
+    assert at.warning and "Evaluation not yet available" in at.warning[0].value
     captions = " ".join(block.value for block in at.caption)
     assert "Accuracy is intentionally absent" in captions

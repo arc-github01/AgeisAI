@@ -170,8 +170,14 @@ alerting:
 # Analyst console
 # -----------------------------------------------------------------------------
 dashboard:
+  # Data source for the analyst console:
+  #   auto     — use pipeline artifacts when present, otherwise the dev fixture
+  #   mock     — always use dashboard/mock_data.py (frontend development)
+  #   pipeline — require real artifacts; overview shows empty state if missing
+  data_source: auto
   alerts_page_size: 50
   top_entities: 10
+  recent_critical_alerts: 8
   entity_history_rows: 200
   # Budgets offered on the performance page's capacity sweep.
   budget_sweep_fractions: [0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.10]
