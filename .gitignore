@@ -1,0 +1,28 @@
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- Environments ----------------------------------------------------------
+.venv/
+venv/
+env/
+
+# --- Generated artefacts ---------------------------------------------------
+# Datasets and trained models are reproducible from config + master seed, so
+# they are deliberately NOT tracked. `python -m src.generator` regenerates them.
+data/raw/*
+data/processed/*
+data/generated/*
+models/*
+artifacts/*
+!**/.gitkeep
+
+# --- Tooling ---------------------------------------------------------------
+.streamlit/secrets.toml
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

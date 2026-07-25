@@ -1,0 +1,29 @@
+# AEGIS - Adaptive Behavioral Threat Detection for IT/OT Systems
+# Python 3.11+ (developed and verified on CPython 3.14)
+#
+# Every dependency below has a specific, documented role. Nothing is speculative.
+
+# --- Core data layer -------------------------------------------------------
+numpy>=2.1              # numeric core, deterministic RNG (np.random.Generator)
+pandas>=2.2             # event tables, rolling-window feature engineering
+scipy>=1.14             # statistical distributions for behavioral baselines
+
+# --- Machine learning ------------------------------------------------------
+scikit-learn>=1.6       # IsolationForest, RandomForest, preprocessing, metrics
+joblib>=1.4             # model + profile persistence
+
+# --- Synthetic data --------------------------------------------------------
+Faker>=30.0             # realistic entity/device/IP surface detail
+
+# --- Configuration ---------------------------------------------------------
+PyYAML>=6.0             # config/config.yaml loading
+
+# --- Visualisation ---------------------------------------------------------
+plotly>=5.24            # interactive dashboard charts
+matplotlib>=3.9         # static figures for the written report / notebook
+
+# --- Dashboard -------------------------------------------------------------
+streamlit>=1.40         # analyst-facing SOC UI
+
+# --- Testing ---------------------------------------------------------------
+pytest>=8.3             # behavioral logic unit tests
