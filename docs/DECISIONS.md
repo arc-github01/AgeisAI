@@ -199,3 +199,124 @@ resolution for reproducibility.
 apply — feature code must avoid chained assignment. Optional SHAP is deferred:
 deterministic feature attribution is the primary explainability mechanism, and
 SHAP will only be added if it is stable on this interpreter and adds value.
+
+---
+
+## ADR-13 — Build the console shell and the metrics contract before the models
+**Status:** Accepted (Phase 1.5)
+
+**Context.** The two things most likely to be rushed at hour 21 are the analyst
+UI and the evaluation. Both are graded criteria, and both constrain the design
+of everything upstream of them.
+
+**Decision.** Build a fully navigable Streamlit console with all five pages and
+a complete, unit-tested metrics library *before* the generator exists. Pages
+render honest "awaiting phase n" states rather than placeholder data.
+
+**Consequences.** Later phases plug into a fixed surface instead of provoking a
+UI rewrite. Choosing metrics before seeing results removes the temptation to
+report whichever ones look best. The console is also a live build-status board.
+
+---
+
+## ADR-14 — Single artifact registry
+**Status:** Accepted (Phase 1.5)
+
+**Context.** Producers and consumers of intermediate files drift apart when both
+hardcode paths.
+
+**Decision.** `src/artifacts.py` declares every pipeline output once — path,
+producing phase, and the command that creates it. The dashboard's readiness
+panel and empty states are generated from the same registry.
+
+**Consequences.** Adding an output is a one-line registry change; a path can
+never disagree between the writer and the reader.
+
+---
+
+## ADR-15 — Alert budget is exact top-k, not a score threshold
+**Status:** Accepted (Phase 1.5)
+
+**Context.** With a `score >= threshold` rule, a cluster of tied scores can
+admit far more alerts than the analyst team can process. Observed in test: 100
+tied events at a 10% budget produce 100 alerts instead of 10.
+
+**Decision.** `budget_alert_mask()` selects exactly `ceil(n * fraction)` events
+by stable descending sort, breaking ties by event order. A SOC has fixed
+capacity, not a fixed score cut-off.
+
+**Consequences.** Reported precision/recall at budget are honest about real
+triage capacity. The tie-breaking rule is deterministic and documented.
+
+---
+
+## ADR-16 — `INSIDER_DRIFT` scored separately, campaign-level metrics reported
+**Status:** Accepted (Phase 1.5, extends ADR-9)
+
+**Context.** Event-level recall understates a detector that catches 1 of the 50
+events in a low-and-slow campaign — operationally, that intrusion was caught.
+
+**Decision.** Alongside event-level metrics, report campaign detection coverage
+and time-to-first-alert (`campaign_detection()`).
+
+**Consequences.** Low-and-slow performance becomes measurable rather than
+rhetorical.
+
+---
+
+## ADR-17 — Metrics are only valid with a provenance manifest
+**Status:** Accepted (Phase 1.5)
+
+**Context.** "Never fabricate evaluation results" needs a mechanism, not a
+promise.
+
+**Decision.** `save_metrics()` is the only sanctioned writer, and it stamps
+every document with seed, full config snapshot, git commit, Python and package
+versions. The performance page reads only from that file and displays the
+provenance. Non-finite values are sanitised to `null` before writing with
+`allow_nan=False`, so the artifacts are strictly valid JSON.
+
+**Consequences.** Any reported number is traceable to a reproducible run.
+
+---
+
+## ADR-18 — The simulator raises rather than renders a placeholder
+**Status:** Accepted (Phase 1.5)
+
+**Context.** A demo feature that fakes its output would invalidate the whole
+demonstration, and placeholder code has a habit of surviving to the deadline.
+
+**Decision.** `simulator._run_injection()` raises `NotImplementedError` until it
+is wired to the real detection pipeline in Phase 11, the INJECT control is
+disabled until its prerequisite artifacts exist, and a test asserts both.
+
+**Consequences.** It is impossible to ship a fake simulator by accident.
+
+---
+
+## ADR-19 — Tests run in an isolated workspace
+**Status:** Accepted (Phase 1.5)
+
+**Context.** A metrics round-trip test wrote `artifacts/metrics/latest.json`,
+and the dashboard immediately displayed unit-test numbers as a real run.
+
+**Decision.** A session-scoped autouse fixture (`tests/conftest.py`) redirects
+every output directory to a temporary root.
+
+**Consequences.** Tests cannot contaminate the deliverable, and the console's
+"no data" state stays truthful.
+
+---
+
+## ADR-20 — Console verified headlessly with `AppTest`
+**Status:** Accepted (Phase 1.5)
+
+**Context.** A dashboard that is only ever checked by eye breaks silently when a
+data contract changes.
+
+**Decision.** `tests/test_dashboard_shell.py` executes the real `app.py` through
+`streamlit.testing.v1.AppTest` and renders every page. Navigation therefore uses
+a sidebar radio rather than `st.navigation`, which `AppTest` drives reliably.
+
+**Consequences.** Every future phase gets an automatic regression check on the
+UI, including that pages survive the hardest case — no data at all.

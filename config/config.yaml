@@ -167,6 +167,16 @@ alerting:
   max_explanation_factors: 6
 
 # -----------------------------------------------------------------------------
+# Analyst console
+# -----------------------------------------------------------------------------
+dashboard:
+  alerts_page_size: 50
+  top_entities: 10
+  entity_history_rows: 200
+  # Budgets offered on the performance page's capacity sweep.
+  budget_sweep_fractions: [0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.10]
+
+# -----------------------------------------------------------------------------
 # Evaluation
 # -----------------------------------------------------------------------------
 evaluation:

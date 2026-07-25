@@ -50,7 +50,12 @@ python -m venv .venv
 # source .venv/bin/activate     # macOS / Linux
 pip install -r requirements.txt
 pytest -q
+streamlit run app.py            # SOC console at http://localhost:8501
 ```
+
+The console runs before any data exists: each page renders its final layout and
+states which artifact it is waiting for, which phase produces it and the command
+that creates it. Nothing is ever displayed as a placeholder number.
 
 All parameters live in [`config/config.yaml`](config/config.yaml). Runs are
 reproducible from `seed.master`; `generator.profile` switches between a small
@@ -59,13 +64,18 @@ reproducible from `seed.master`; `generator.profile` switches between a small
 ## Repository layout
 
 ```
+app.py      Streamlit entry point (thin router over dashboard/)
 config/     config.yaml - single source of truth for every tunable parameter
-src/        library code (config, schema, utils; ML packages added per phase)
-tests/      pytest suite for behavioural and pipeline logic
-docs/       decision record, architecture, report
+src/        library code
+  schema.py     canonical event contract + threat taxonomy + leakage guard
+  artifacts.py  registry of every pipeline output and the phase that makes it
+  evaluation/   imbalance-aware metrics, run manifests, report figures
+dashboard/  SOC console: state layer, theme, charts, five analyst pages
+tests/      pytest suite for behavioural, metric and UI logic
+docs/       decision record (DECISIONS.md), architecture, report
 data/       generated datasets (git-ignored, reproducible from seed)
 models/     persisted models and entity profiles (git-ignored)
-artifacts/  evaluation figures and metric exports (git-ignored)
+artifacts/  alert store, evaluation figures, metric exports (git-ignored)
 ```
 
 ## Roadmap
@@ -73,6 +83,7 @@ artifacts/  evaluation figures and metric exports (git-ignored)
 | Phase | Scope | Status |
 |-------|-------------------------------------------------|--------|
 | 1 | Architecture, repository, environment, config, determinism | Done |
+| 1.5 | SOC console shell + evaluation/report infrastructure | Done |
 | 2 | Synthetic entity population + normal behaviour generator | Pending |
 | 3 | Injection of all 7 attack / edge-case behaviours | Pending |
 | 4 | Behavioral feature engineering (temporal, geo, device, resource, sequence) | Pending |
@@ -90,5 +101,11 @@ artifacts/  evaluation figures and metric exports (git-ignored)
 
 Accuracy is **not** a headline metric: at ~1% attack prevalence a model that
 predicts "normal" for everything scores ~99%. AEGIS is measured on PR-AUC,
-per-attack precision/recall/F1, false-positive rate, and recall achieved within
-a realistic top-1% analyst alert budget.
+per-attack precision/recall/F1, false-positive rate, recall achieved within a
+realistic top-1% analyst alert budget, and campaign-level time-to-detection.
+
+These metrics were implemented and tested in Phase 1.5, before any model
+existed, so the reported quantities are dictated by the problem rather than
+chosen after seeing which look flattering. Every metrics file is written with a
+manifest recording the seed, config snapshot, git commit and package versions of
+the run that produced it.
