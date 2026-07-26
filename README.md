@@ -178,7 +178,7 @@ artifacts/  alert store, evaluation figures, metric exports (git-ignored)
 | 9 | Near-real-time streaming `process_event` + replay | Done |
 | 10 | Streamlit SOC dashboard polish against live artifacts | Done |
 | 11 | Live attack simulator through the real pipeline | Done |
-| 12 | Final evaluation report + presentation | Pending |
+| 12 | Final evaluation report + presentation | Done |
 
 ## Evaluation stance
 
