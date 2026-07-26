@@ -35,6 +35,7 @@ DASHBOARD_ALERT_COLUMNS: tuple[str, ...] = (
     "timestamp",
     "entity_id",
     "entity_type",
+    "event_id",
     "anomaly_score",
     "sequence_score",
     "attack_type",
@@ -43,6 +44,17 @@ DASHBOARD_ALERT_COLUMNS: tuple[str, ...] = (
     "severity",
     "short_reason",
     "reasons",
+    "reason_codes",
+    "top_contributors",
+)
+
+# Extra observation fields useful for investigation (kept when present).
+DASHBOARD_EVENT_EXTRA_COLUMNS: tuple[str, ...] = (
+    "latitude",
+    "longitude",
+    "bytes_transferred",
+    "device_mac",
+    "role",
 )
 
 # Entity roster (one row per monitored entity).
@@ -62,6 +74,7 @@ ENTITY_TYPE_LABELS: dict[str, str] = {
 }
 
 ATTACK_DISPLAY_NAMES: dict[str, str] = {
+    "BENIGN": "Benign (no attack class)",
     "BRUTE_FORCE": "Brute Force",
     "IMPOSSIBLE_TRAVEL": "Impossible Travel",
     "CREDENTIAL_STUFFING": "Credential Stuffing",
@@ -69,6 +82,31 @@ ATTACK_DISPLAY_NAMES: dict[str, str] = {
     "DEVICE_SPOOFING": "Device Spoofing",
     "LOW_AND_SLOW_EXFILTRATION": "Low-and-Slow Exfiltration",
     "INSIDER_DRIFT": "Insider Drift",
+}
+
+# Analyst-facing labels for hybrid-risk reason codes (from Phase 6 artifacts).
+REASON_CODE_LABELS: dict[str, str] = {
+    "ISOLATION_FOREST_ANOMALY": "Isolation Forest anomaly",
+    "RULE_THRESHOLD_EXCEEDED": "Rule threshold exceeded",
+    "PERSISTENT_SUSPICIOUS_ACTIVITY": "Persistent suspicious activity",
+    "NEW_DEVICE": "New / unfamiliar device",
+    "OFF_HOURS_ACTIVITY": "Off-hours activity",
+    "UNUSUAL_LOCATION": "Unusual location for this entity",
+    "UNUSUAL_SESSION_DURATION": "Unusual session duration",
+    "RARE_SEQUENCE_TRANSITION": "Rare resource-sequence transition",
+    "IMPOSSIBLE_VELOCITY": "Travel between locations is physically implausible",
+    "RARE_RESOURCE": "Rare / never-before-seen resource",
+    "RESOURCE_BREADTH_SPIKE": "Sudden expansion of accessed resources",
+    "UNUSUAL_TRANSFER_VOLUME": "Unusual transfer volume",
+    "AUTH_FAILURE_BURST": "Authentication failure burst",
+    "ACTIVITY_BURST": "Unusual burst of activity",
+    "RESOURCE_TRAVERSAL_PATTERN": "Suspicious resource-traversal pattern",
+    "GEOGRAPHIC_ANOMALY": "Geographic anomaly",
+    "SEQUENCE_ANOMALY": "Resource-sequence anomaly",
+    "VOLUME_ANOMALY": "Transfer volume anomaly",
+    "IMPOSSIBLE_TRAVEL": "Impossible travel pattern",
+    "LATERAL_EXPANSION": "Lateral resource expansion",
+    "COLD_START_UNCERTAINTY": "Cold-start uncertainty",
 }
 
 SEVERITY_ORDER: tuple[str, ...] = tuple(s.value for s in Severity)
@@ -79,6 +117,7 @@ QUEUE_DISPLAY_COLUMNS: tuple[str, ...] = (
     "entity_id",
     "entity_type",
     "attack_type",
+    "attack_confidence",
     "risk_score",
     "severity",
     "short_reason",
@@ -89,10 +128,11 @@ QUEUE_COLUMN_LABELS: dict[str, str] = {
     "timestamp": "Timestamp",
     "entity_id": "Entity",
     "entity_type": "Type",
-    "attack_type": "Attack Type",
+    "attack_type": "Predicted Type",
+    "attack_confidence": "Confidence",
     "risk_score": "Risk",
     "severity": "Severity",
-    "short_reason": "Reason",
+    "short_reason": "Top Reason",
 }
 
 # Columns shown in the entity event history table.
@@ -136,11 +176,13 @@ __all__ = [
     "DASHBOARD_ALERT_COLUMNS",
     "DASHBOARD_ENTITY_COLUMNS",
     "DASHBOARD_EVENT_COLUMNS",
+    "DASHBOARD_EVENT_EXTRA_COLUMNS",
     "ENTITY_TYPE_LABELS",
     "EVENT_HISTORY_COLUMNS",
     "EVENT_HISTORY_LABELS",
     "PERFORMANCE_METRIC_SECTIONS",
     "QUEUE_COLUMN_LABELS",
     "QUEUE_DISPLAY_COLUMNS",
+    "REASON_CODE_LABELS",
     "SEVERITY_ORDER",
 ]

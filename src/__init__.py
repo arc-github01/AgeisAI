@@ -10,7 +10,7 @@ Package layout (each sub-package is introduced by the phase that needs it):
     src.features        behavioral / geographic / sequence feature engineering
     src.profiling       per-entity + cohort behavioural baselines
     src.models          IsolationForest anomaly detector, attack classifier
-    src.detection       detection orchestration + risk engine
+    src.detection       streaming process_event + live injection wiring
     src.explainability  deterministic reason attribution for every alert
     src.drift           adaptive, poisoning-resistant baseline updates
 """

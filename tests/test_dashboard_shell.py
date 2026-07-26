@@ -101,5 +101,6 @@ def test_performance_page_refuses_to_invent_metrics():
     assert "PR-AUC" in body
     assert 'class="value pending">--' in body
     assert at.warning and "Evaluation not yet available" in at.warning[0].value
+    assert at.info and any("Evaluation / debug view" in block.value for block in at.info)
     captions = " ".join(block.value for block in at.caption)
     assert "Accuracy is intentionally absent" in captions

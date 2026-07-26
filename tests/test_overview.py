@@ -102,6 +102,7 @@ def test_overview_renders_with_development_fixture():
     assert "Events processed" in body
     assert "Threat activity over time" in body
     assert "Top risk entities" in body
+    assert "Predicted attack-type mix" in body or "Threat distribution" in body
     assert at.info and "Development fixture active" in at.info[0].value
 
 

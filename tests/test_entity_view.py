@@ -56,7 +56,7 @@ def test_entity_event_and_alert_history_tables():
 
     alerts = provider.get_entity_alert_history(entity_id, limit=5)
     assert not alerts.empty
-    assert "Attack Type" in alerts.columns
+    assert "Predicted Type" in alerts.columns
 
 
 def test_entity_investigation_page_renders():

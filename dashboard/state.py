@@ -87,8 +87,26 @@ class DashboardContext:
     def features(self) -> pd.DataFrame | None:
         return self._frame("features")
 
+    def risk_scores(self) -> pd.DataFrame | None:
+        return self._frame("risk_scores")
+
+    def classifications(self) -> pd.DataFrame | None:
+        return self._frame("classifications")
+
+    def streaming_scores(self) -> pd.DataFrame | None:
+        return self._frame("streaming_scores")
+
     def entities(self) -> Any | None:
         return self._json("entities")
+
+    def risk_evaluation(self) -> dict | None:
+        return self._json("risk_evaluation")
+
+    def drift_evaluation(self) -> dict | None:
+        return self._json("drift_evaluation")
+
+    def streaming_metrics(self) -> dict | None:
+        return self._json("streaming_metrics")
 
     def metrics(self) -> dict | None:
         document = self._json("metrics")
@@ -101,10 +119,18 @@ class DashboardContext:
     def entity_ids(self) -> list[str]:
         """Selectable entities, from the entity roster or the event log."""
         roster = self.entities()
+        if isinstance(roster, dict) and isinstance(roster.get("entities"), list):
+            return sorted(
+                str(item.get("entity_id"))
+                for item in roster["entities"]
+                if item.get("entity_id") is not None
+            )
         if isinstance(roster, list) and roster:
             return sorted(str(item.get("entity_id")) for item in roster)
         if isinstance(roster, dict) and roster:
-            return sorted(str(key) for key in roster)
+            # Legacy flat map of entity_id -> profile.
+            if all(isinstance(v, dict) for v in roster.values()):
+                return sorted(str(key) for key in roster)
         events = self.events()
         if events is not None and "entity_id" in events.columns:
             return sorted(events["entity_id"].astype(str).unique().tolist())

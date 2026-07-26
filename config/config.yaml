@@ -73,6 +73,75 @@ generator:
     low_and_slow_exfiltration: 0.10
     insider_drift: 0.08
 
+  # ---------------------------------------------------------------------------
+  # Attack campaign shaping (Phase 3).
+  #
+  # SIZING MODEL — both knobs stay meaningful:
+  #   total attack budget  = target_events * attack_prevalence
+  #   per-type budget      = budget * normalised attack_mix[type]
+  #   campaigns            = the `campaigns` value below
+  #   events per campaign  = per-type budget / campaigns, clamped to the range
+  #                          the injector considers plausible
+  # If clamping leaves a shortfall (impossible travel is naturally ~2 events),
+  # extra campaigns of that type are added to close it. The achieved prevalence
+  # is reported in the run summary rather than assumed.
+  #
+  # DIFFICULTY: a uniformly blatant attack set makes PR-AUC meaningless, so a
+  # share of every type is generated as a subtle variant instead.
+  # ---------------------------------------------------------------------------
+  attacks:
+    stealth_fraction: 0.35        # share of campaigns generated as subtle variants
+
+    # RFC 5737 documentation ranges — never routable, unmistakably external.
+    attacker_networks:
+      - "203.0.113.0/24"
+      - "198.51.100.0/24"
+      - "192.0.2.0/24"
+
+    brute_force:
+      campaigns: 8
+      attempts: [25, 80]
+      stealth_attempts: [8, 15]
+      window_minutes: [5, 25]
+      stealth_window_minutes: [180, 600]
+      final_success_prob: 0.30
+
+    impossible_travel:
+      campaigns: 12
+      gap_minutes: [20, 70]
+      min_km: 3000                # obvious: another continent
+      stealth_min_km: 1200        # subtle: still physically impossible in the gap
+
+    credential_stuffing:
+      campaigns: 4
+      victims: [25, 60]
+      source_ips: [2, 4]
+      stealth_source_ips: [6, 10]           # spread thinner across more origins
+      success_rate: 0.04
+      window_minutes: [15, 90]
+      stealth_window_minutes: [240, 600]
+
+    lateral_movement:
+      campaigns: 8
+      hops: [4, 8]
+      stealth_hops: [3, 4]
+
+    device_spoofing:
+      campaigns: 10
+      events: [3, 10]
+
+    low_and_slow_exfiltration:
+      campaigns: 5
+      days: [7, 21]
+      events_per_day: [1, 3]
+      bytes_growth: 1.25          # geometric per-day multiplier
+      stealth_bytes_growth: 1.10
+
+    insider_drift:
+      campaigns: 5
+      days: [14, 35]
+      new_resources: [2, 4]
+
   # Statistical noise applied to otherwise habitual behaviour so that "normal"
   # is not unrealistically deterministic. Prototype calibration values.
   noise:
@@ -92,6 +161,9 @@ features:
   # Minimum plausible commercial travel speed used for impossible-travel logic.
   # 900 km/h cruise + generous allowance for airport/ground time.
   max_plausible_kmh: 900.0
+  rarity_smoothing: 1.0
+  std_floor: 1.0
+  velocity_cap_kmh: 100000.0
 
 # -----------------------------------------------------------------------------
 # Entity profiling + cold start
@@ -106,13 +178,38 @@ profiling:
   cohort_keys: [entity_type, role]
 
 # -----------------------------------------------------------------------------
-# Concept drift / adaptive baselines
+# Concept drift / adaptive baselines (Phase 8)
+#
+# Frozen Phase-4 profiles remain the offline leakage-safe feature source.
+# AdaptiveProfileStore replays (or streams) events AFTER that cutoff and
+# updates only when risk_score < baseline_update_max_risk, so attackers cannot
+# poison baselines by repeating high-risk behaviour. Thresholds are policy
+# knobs, not fitted on evaluation attack labels.
 # -----------------------------------------------------------------------------
 drift:
-  # Events scoring at or above this risk are NOT absorbed into the baseline,
-  # preventing an attacker from poisoning the entity profile.
+  enabled: true
+  # Events at or above this hybrid risk_score are NOT absorbed into baselines.
   baseline_update_max_risk: 40
+  # Soft memory horizon for documentation / caps; EWMA half-life does the work.
   rolling_window_days: 30
+  # Optional override; default = profiling.ewma_halflife_days.
+  # ewma_halflife_days: null
+
+# -----------------------------------------------------------------------------
+# Near-real-time streaming inference (Phase 9)
+# -----------------------------------------------------------------------------
+detection:
+  # Rolling history retained per entity for temporal/geo/sequence features.
+  # 0 = keep all history (correct for offline/streaming consistency on the
+  # prototype corpus). Production deployments may set a finite window.
+  history_retention_hours: 0
+  # When true, process_event applies Phase-8 risk-gated adaptive updates.
+  apply_drift_updates_default: true
+  # CLI replay (`python -m src.detection`) measures latency on this many
+  # chronological events (null = entire corpus). Full-corpus replay remains
+  # available by setting null; single-row sklearn calls are intentionally
+  # unbatched to reflect the streaming path.
+  replay_max_events: 500
 
 # -----------------------------------------------------------------------------
 # Models
@@ -122,8 +219,34 @@ models:
     type: isolation_forest
     n_estimators: 300
     max_samples: auto
-    contamination: 0.02        # aligned with configured attack prevalence + noise
+    contamination: 0.02        # affects sklearn predict/decision_function offset, not our calibrated score thresholds
     n_jobs: -1
+    # random_state is derived from seed.master via src.utils.seeding, not hard-coded,
+    # so the single master seed remains the only reproducibility knob.
+
+    # Operating points are calibrated as quantiles of BENIGN training anomaly
+    # scores. quantile q leaves a benign exceedance (and thus an approximate
+    # false-positive rate) of 1 - q. Thresholds never see evaluation labels.
+    calibration:
+      method: benign_train_chronological_holdout_quantile
+      default: balanced
+      fit_fraction: 0.80  # earlier benign training rows fit the forest; later rows calibrate thresholds
+      operating_points:
+        strict: 0.999      # ~0.1% benign FPR
+        balanced: 0.99     # ~1% benign FPR
+        sensitive: 0.95    # ~5% benign FPR
+
+  # Simple, honestly-tuned reference detectors the IsolationForest must beat.
+  # The rule baseline standardises a handful of intuitively suspicious features
+  # on benign training data and sums them; it is a real detector, not a strawman.
+  baselines:
+    rule_features:
+      - failed_auth_5m
+      - geo_velocity_kmh
+      - sequence_anomaly_score
+      - location_rarity
+      - device_rarity
+      - auth_failure_deviation
 
   attack_classifier:
     type: random_forest
@@ -132,6 +255,10 @@ models:
     min_samples_leaf: 3
     class_weight: balanced_subsample
     n_jobs: -1
+    # random_state derived from seed.master via src.utils.seeding.
+    # Multi-class over BENIGN + ATTACK_CLASSES (including INSIDER_DRIFT as an
+    # edge-case class). Labels supervise training but never enter the feature
+    # matrix. Evaluation labels are used only for metrics after prediction.
 
 # -----------------------------------------------------------------------------
 # Risk engine. WEIGHTS ARE PROTOTYPE CALIBRATION PARAMETERS, NOT LEARNED VALUES.
@@ -139,6 +266,9 @@ models:
 # a 0-100 analyst-facing score.
 # -----------------------------------------------------------------------------
 risk:
+  # LEGACY Phase-1 sketch of a single weighted blend. Superseded by `risk.engine`
+  # below, which is the implemented Phase 6 hybrid engine. Retained because it
+  # documents the original intent and is asserted by the smoke tests.
   weights:
     ml_anomaly: 0.35           # IsolationForest normalised score
     behavioral_deviation: 0.25 # deviation from the entity's own baseline
@@ -156,6 +286,131 @@ risk:
     MEDIUM: [31, 60]
     HIGH: [61, 80]
     CRITICAL: [81, 100]
+
+  # ---------------------------------------------------------------------------
+  # Phase 6 hybrid risk engine.
+  #
+  # RATIONALE FOR THE DEFAULTS BELOW. None of these were fitted against
+  # evaluation labels or against the known missed campaigns. They encode a
+  # policy about how much corroboration an analyst should require:
+  #
+  #   risk = 100 * (1 - exp(-total_evidence / evidence_scale))
+  #
+  # With evidence_scale = 1.5 and the severity bands above, HIGH (>=61) needs
+  # total_evidence ~= 1.41 and CRITICAL (>=81) needs ~= 2.49. Read against the
+  # weights below that means, approximately:
+  #   * one calibrated detector firing alone (weight 1.0) -> MEDIUM (~49)
+  #   * two independent detectors agreeing (1.0+0.8)     -> HIGH (~70)
+  #   * three or more, or sustained repetition            -> CRITICAL
+  # That is the whole point of a hybrid: corroboration, not a single oracle.
+  # evidence_scale was chosen to make that policy hold mathematically — it was
+  # not fitted against evaluation labels or known missed campaigns.
+  #
+  # Signal weights are deliberately symmetric between the two calibrated
+  # detectors (IsolationForest and the rule baseline). Both are calibrated to
+  # the same benign false-positive budget, so a priori neither deserves to
+  # dominate. Context weights are ordered by how hard the behaviour is to
+  # explain away benignly (impossible velocity > auth-failure burst > new
+  # device > off-hours), which is a security judgement, not a fitted value.
+  # ---------------------------------------------------------------------------
+  engine:
+    version: 1
+    # Saturating aggregation scale. See formula above.
+    evidence_scale: 1.5
+    # Quantiles of BENIGN TRAINING events used as activation anchors. A signal
+    # starts contributing at low_quantile and is fully on by high_quantile.
+    calibration:
+      low_quantile: 0.95
+      high_quantile: 0.999
+    # Causal, entity-scoped accumulation with exponential time decay:
+    #   decayed   = state * 0.5 ** (dt_seconds / halflife_seconds)
+    #   state_new = min(decayed + instantaneous_evidence, state_cap)
+    persistence:
+      halflife_seconds: 21600   # 6h - roughly one analyst shift
+      weight: 0.60              # how strongly decayed history counts right now
+      state_cap: 4.0            # bound accumulation so risk cannot run away
+      reason: PERSISTENT_SUSPICIOUS_ACTIVITY
+    alerting:
+      # CRITICAL is the paging gate. HIGH remains an elevated-watch severity for
+      # the dashboard, but does not open an alert by default. This matches the
+      # Phase 5 ~1% benign-FPR operating policy: on benign training scores the
+      # hybrid's 99th percentile sits near the CRITICAL band edge, so paging at
+      # HIGH would flood the queue. Not fitted against attack/evaluation labels.
+      min_severity: CRITICAL
+      cooldown_seconds: 3600    # one alert per entity per hour during a burst
+      escalation_bypasses_cooldown: true
+      max_reasons: 6
+    signals:
+      isolation_forest:
+        weight: 1.00
+        reason: ISOLATION_FOREST_ANOMALY
+      rule:
+        weight: 0.80
+        reason: RULE_THRESHOLD_EXCEEDED
+      # Contextual behavioural signals, all read from causal Phase 4 features.
+      context:
+        - name: impossible_velocity
+          reason: IMPOSSIBLE_VELOCITY
+          weight: 0.45
+          mode: fixed_ramp     # physical threshold, not a data quantile
+          feature: geo_velocity_kmh
+          low: 900.0           # features.max_plausible_kmh
+          high: 2700.0
+        - name: auth_failure_burst
+          reason: AUTH_FAILURE_BURST
+          weight: 0.40
+          mode: ramp
+          feature: failed_auth_5m
+        - name: new_device
+          reason: NEW_DEVICE
+          weight: 0.35
+          mode: inverse_boolean
+          feature: is_known_device
+        - name: resource_traversal_pattern
+          reason: RESOURCE_TRAVERSAL_PATTERN
+          weight: 0.35
+          mode: min_of         # breadth AND improbable transitions together
+          components: [recent_resource_breadth_24h, sequence_anomaly_score]
+        - name: unusual_location
+          reason: UNUSUAL_LOCATION
+          weight: 0.30
+          mode: boolean
+          feature: is_new_location
+        - name: resource_breadth_spike
+          reason: RESOURCE_BREADTH_SPIKE
+          weight: 0.30
+          mode: ramp
+          feature: recent_resource_breadth_24h
+        - name: rare_sequence_transition
+          reason: RARE_SEQUENCE_TRANSITION
+          weight: 0.30
+          mode: ramp
+          feature: sequence_anomaly_score
+        - name: rare_resource
+          reason: RARE_RESOURCE
+          weight: 0.25
+          mode: ramp
+          feature: resource_rarity
+        - name: activity_burst
+          reason: ACTIVITY_BURST
+          weight: 0.20
+          mode: ramp
+          feature: event_count_5m
+        - name: unusual_transfer_volume
+          reason: UNUSUAL_TRANSFER_VOLUME
+          weight: 0.20
+          mode: abs_ramp
+          feature: transfer_volume_zscore
+        - name: off_hours_activity
+          reason: OFF_HOURS_ACTIVITY
+          weight: 0.15
+          mode: boolean
+          feature: is_entity_off_hours
+        - name: unusual_session_duration
+          reason: UNUSUAL_SESSION_DURATION
+          weight: 0.15
+          mode: abs_ramp
+          feature: session_duration_zscore
 
 # -----------------------------------------------------------------------------
 # Alerting / analyst budget
@@ -191,3 +446,5 @@ evaluation:
   train_fraction: 0.70
   primary_metric: pr_auc
   report_metrics: [precision, recall, f1, pr_auc, roc_auc, fpr, recall_at_budget]
+  # Fixed false-positive rates at which recall is reported (security view).
+  fpr_targets: [0.001, 0.005, 0.01, 0.05]

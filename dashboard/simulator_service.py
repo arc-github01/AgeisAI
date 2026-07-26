@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 import pandas as pd
 
@@ -13,8 +14,11 @@ from src.detection.injection import (
     InjectionResult,
     process_injection,
 )
+from src.generator.live_injection import synthesize_live_attack
+from src.schema import IDENTITY_COLUMNS, OBSERVATION_COLUMNS
 
-from . import mock_data
+from . import live_state, mock_data
+from .contracts import DASHBOARD_ALERT_COLUMNS
 from .data_provider import DashboardDataProvider
 from .state import DashboardContext
 
@@ -22,8 +26,11 @@ REQUIRED_ARTIFACTS: tuple[str, ...] = (
     "entities",
     "events",
     "profiles",
+    "features",
     "anomaly_detector",
     "attack_classifier",
+    "risk_calibration",
+    "rule_baseline",
 )
 
 PIPELINE_STAGE_ARTIFACTS: dict[str, str | None] = {
@@ -32,7 +39,7 @@ PIPELINE_STAGE_ARTIFACTS: dict[str, str | None] = {
     "PROFILE": "profiles",
     "ANOMALY": "anomaly_detector",
     "CLASSIFIER": "attack_classifier",
-    "RISK": "alerts",
+    "RISK": "risk_calibration",
     "EXPLANATION": "alerts",
     "ALERT": "alerts",
 }
@@ -66,6 +73,24 @@ class SimulatorRunOutcome:
     events: pd.DataFrame
     result: InjectionResult | None = None
     error: str | None = None
+    alerts_posted: int = 0
+
+
+def _alert_from_result(result_alert: Mapping[str, Any] | pd.Series) -> dict[str, Any]:
+    """Normalise a pipeline alert dict/series into the dashboard alert contract."""
+    if isinstance(result_alert, pd.Series):
+        raw = result_alert.to_dict()
+    else:
+        raw = dict(result_alert)
+    row: dict[str, Any] = {}
+    for column in DASHBOARD_ALERT_COLUMNS:
+        row[column] = raw.get(column)
+    if row.get("timestamp") is not None:
+        row["timestamp"] = pd.Timestamp(row["timestamp"])
+    # Prefer structured contributors for the contribution chart.
+    if row.get("top_contributors") is None and isinstance(raw.get("reasons"), list):
+        row["top_contributors"] = raw["reasons"]
+    return row
 
 
 class SimulatorService:
@@ -118,11 +143,18 @@ class SimulatorService:
         attack_type: str,
         intensity: int,
     ) -> pd.DataFrame:
-        """Create injection input events.
+        """Create injection input events via the real Phase 3 attack injectors.
 
-        Uses the development fixture until the backend generator exposes a live
-        attack injection API.
+        Falls back to the development fixture only when the generator roster is
+        unavailable (unit tests / fixture-only shell).
         """
+        if self._ctx.has("entities") and self._ctx.has("events"):
+            return synthesize_live_attack(
+                entity_id=entity_id,
+                attack_type=attack_type,
+                intensity=intensity,
+            )
+
         entities = self._provider.get_entities()
         if entities.empty:
             raise ValueError("entity roster is unavailable")
@@ -147,19 +179,54 @@ class SimulatorService:
             attack_type=attack_type,
             intensity=intensity,
         )
-        events = self.synthesize_events(entity_id, attack_type, intensity)
+        events = pd.DataFrame()
         try:
+            events = self.synthesize_events(entity_id, attack_type, intensity)
             result = process_injection(events, request)
+            posted = self._publish_to_dashboard(events, result)
             return SimulatorRunOutcome(
                 success=True,
                 request=request,
                 events=events,
                 result=result,
+                alerts_posted=posted,
             )
-        except DetectionPipelineNotReadyError as exc:
+        except (
+            DetectionPipelineNotReadyError,
+            ValueError,
+            FileNotFoundError,
+            OSError,
+            KeyError,
+            TypeError,
+        ) as exc:
             return SimulatorRunOutcome(
                 success=False,
                 request=request,
                 events=events,
                 error=str(exc),
             )
+        except Exception as exc:  # noqa: BLE001 — never fabricate alerts on any failure
+            return SimulatorRunOutcome(
+                success=False,
+                request=request,
+                events=events,
+                error=f"Failed to run live detection pipeline: {exc}",
+            )
+
+    def _publish_to_dashboard(
+        self,
+        events: pd.DataFrame,
+        result: InjectionResult,
+    ) -> int:
+        """Push scored alerts + injection events into session overlays."""
+        alerts: list[dict[str, Any]] = []
+        for scored in result.results:
+            if scored.alert is None:
+                continue
+            alerts.append(_alert_from_result(scored.alert))
+
+        # Keep observation columns that entity investigation can display.
+        keep = [c for c in IDENTITY_COLUMNS + OBSERVATION_COLUMNS if c in events.columns]
+        live_events = events.loc[:, keep].copy() if keep else events.copy()
+        live_state.append_live_injection(alerts=alerts, events=live_events)
+        return len(alerts)

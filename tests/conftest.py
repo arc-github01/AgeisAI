@@ -55,6 +55,15 @@ def clear_pipeline_artifacts() -> None:
 def _clean_metrics_between_tests(request: pytest.FixtureRequest):
     """Drop metrics artifacts unless the test explicitly retains them."""
     retain = "retain_metrics_artifact" in request.keywords
+    # Streaming module tests hold models in memory but still need on-disk
+    # thresholds during the module-scoped bootstrap; skip clearing for them.
+    if request.node.get_closest_marker("no_pipeline_cleanup"):
+        if not retain:
+            clear_metrics_artifacts()
+        yield
+        if not retain:
+            clear_metrics_artifacts()
+        return
     clear_pipeline_artifacts()
     if not retain:
         clear_metrics_artifacts()
@@ -68,4 +77,8 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "retain_metrics_artifact: keep evaluation metrics JSON for this test",
+    )
+    config.addinivalue_line(
+        "markers",
+        "no_pipeline_cleanup: preserve module-scoped pipeline fixtures",
     )

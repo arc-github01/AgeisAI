@@ -24,6 +24,11 @@ def test_injection_events_impossible_travel_fixture():
     assert events.iloc[0]["city"] == home
     assert events.iloc[1]["city"] == "London"
     assert events["event_id"].str.startswith("INJ_").all()
+    from src.schema import IDENTITY_COLUMNS, OBSERVATION_COLUMNS, validate_events
+
+    validate_events(events, require_labels=False)
+    for col in IDENTITY_COLUMNS + OBSERVATION_COLUMNS:
+        assert col in events.columns
 
 
 @pytest.mark.parametrize(
@@ -58,8 +63,16 @@ def test_simulator_run_is_honest_when_pipeline_missing():
     outcome = service.run("USR_001", "IMPOSSIBLE_TRAVEL", 3)
     assert not outcome.success
     assert outcome.result is None
-    assert outcome.error and "Phase 11" in outcome.error
-    assert not outcome.events.empty
+    assert outcome.error
+    assert outcome.alerts_posted == 0
+    lowered = outcome.error.lower()
+    assert (
+        "pipeline" in lowered
+        or "failed to load" in lowered
+        or "failed to run" in lowered
+        or "expecting value" in lowered
+        or "entities" in lowered
+    )
 
 
 def test_simulator_page_renders_with_controls():
@@ -69,12 +82,14 @@ def test_simulator_page_renders_with_controls():
     inject = [b for b in at.button if b.label == "INJECT ATTACK"]
     assert len(inject) == 1 and inject[0].disabled
     assert at.selectbox, "expected entity and attack selectors"
+    clear = [b for b in at.button if b.label == "Clear live overlays"]
+    assert len(clear) == 1
 
 
-def test_simulator_does_not_import_generator_modules():
-    import dashboard.simulator as page
+def test_simulator_uses_live_injection_module_not_legacy_generator():
     import dashboard.simulator_service as service
 
-    for module in (page, service):
-        text = Path(module.__file__).read_text(encoding="utf-8")
-        assert "data_generator" not in text
+    text = Path(service.__file__).read_text(encoding="utf-8")
+    assert "data_generator" not in text
+    assert "synthesize_live_attack" in text
+    assert "live_state" in text

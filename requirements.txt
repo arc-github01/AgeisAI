@@ -6,6 +6,7 @@
 # --- Core data layer -------------------------------------------------------
 numpy>=2.1              # numeric core, deterministic RNG (np.random.Generator)
 pandas>=2.2             # event tables, rolling-window feature engineering
+pyarrow>=17.0           # parquet engine for the generated event dataset
 scipy>=1.14             # statistical distributions for behavioral baselines
 
 # --- Machine learning ------------------------------------------------------

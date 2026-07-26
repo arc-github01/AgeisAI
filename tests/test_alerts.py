@@ -47,11 +47,12 @@ def test_alert_queue_summary_and_ranking():
 def test_alert_queue_table_uses_friendly_labels():
     provider = DashboardDataProvider(mode="mock")
     table = provider.get_alert_queue_table(limit=5)
-    assert "Attack Type" in table.columns
-    assert "Reason" in table.columns
+    assert "Predicted Type" in table.columns
+    assert "Top Reason" in table.columns
+    assert "Confidence" in table.columns
     assert len(table) == 5
-    assert "Brute Force" in table["Attack Type"].values or "Impossible Travel" in table[
-        "Attack Type"
+    assert "Brute Force" in table["Predicted Type"].values or "Impossible Travel" in table[
+        "Predicted Type"
     ].values
 
 
@@ -79,7 +80,7 @@ def test_alert_queue_page_renders_with_fixture():
     assert at.info and "Development fixture active" in at.info[0].value
     body = " ".join(block.value for block in at.markdown)
     assert "Matching alerts" in body
-    assert "Alert detail" in body
+    assert "Alert investigation" in body
 
 
 def test_alert_queue_does_not_import_generator_modules():

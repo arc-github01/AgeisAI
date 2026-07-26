@@ -30,20 +30,24 @@ act on, under a realistic triage budget.
                 |                                         |
                 +--------------------+--------------------+
                                      |
-                        IsolationForest anomaly score      [PHASE 6]
+                        IsolationForest anomaly score      [PHASE 5 - Done]
                                      |
-                                risk engine                [PHASE 8]
+                                risk engine                [PHASE 6 - Done]
                                      |
                 +--------------------+--------------------+
                 |                                         |
         attack classifier                          explainability
-        (RandomForest)        [PHASE 7]            (deterministic)  [PHASE 8]
+        (RandomForest)        [PHASE 7]            (deterministic)  [PHASE 6]
                 |                                         |
                 +--------------------+--------------------+
                                      |
+                      adaptive profiles (risk-gated EWMA)  [PHASE 8 - Done]
+                                     |
+                    process_event() streaming path         [PHASE 9 - Done]
+                                     |
                                alert store
                                      |
-                          Streamlit SOC console         [PHASE 1.5 shell, live per phase]
+                          Streamlit SOC console         [PHASE 1.5 shell; polish pending]
 ```
 
 ## 3. Module map
@@ -54,16 +58,17 @@ act on, under a realistic triage budget.
 | `src/paths.py` | Project-root-relative locations | Done |
 | `src/schema.py` | Canonical event contract, threat taxonomy, leakage guard | Done |
 | `src/artifacts.py` | Registry of every pipeline output (path, phase, producer) | Done |
-| `src/utils/` | Deterministic seeding, logging | Done |
+| `src/utils/` | Deterministic seeding, great-circle geography, logging | Done |
 | `src/evaluation/` | Imbalance-aware metrics, manifests, report figures | Done |
 | `dashboard/` | SOC console: state layer, theme, charts, five pages | Shell done |
-| `src/generator/` | Entities, normal behaviour, attack injection | [PENDING PHASE 2-3] |
-| `src/features/` | Temporal, geographic, device, resource, sequence features | [PENDING PHASE 4] |
-| `src/profiling/` | Personal + cohort baselines, cold start | [PENDING PHASE 5] |
-| `src/models/` | IsolationForest detector, attack classifier | [PENDING PHASE 6-7] |
-| `src/detection/` | Orchestration + risk engine | [PENDING PHASE 8] |
-| `src/explainability/` | Reason attribution per alert | [PENDING PHASE 8] |
-| `src/drift/` | Adaptive, poisoning-resistant baselines | [PENDING PHASE 9] |
+| `src/generator/` | Entities, normal behaviour, attack injection | Done |
+| `src/features/` | Temporal, geographic, device, resource, sequence features | Done |
+| `src/profiling/` | Personal + cohort baselines, cold start | Done |
+| `src/models/` | IsolationForest + RandomForest attack classifier + evaluation | Done |
+| `src/risk/` | Hybrid risk engine, explanations, alerts, evaluation | Done |
+| `src/drift/` | Risk-gated EWMA adaptive profiles + drift evaluation | Done |
+| `src/detection/` | Streaming `process_event`, replay, live injection wiring | Done |
+| `src/generator/live_injection.py` | Phase 11 live campaign synthesis for the SOC simulator | Done |
 
 ## 4. Contracts that hold the system together
 
@@ -88,6 +93,13 @@ freshly scored events without a page rewrite.
 **Metrics contract** (`src/evaluation/`). Defined before the models, so the
 reported quantities are dictated by the problem (rare-event detection under a
 fixed analyst budget) rather than chosen to flatter a result.
+
+**Streaming state contract** (`src/detection/`). `process_event()` validates and
+strips an incoming observation, computes features from prior same-entity
+history, then commits history only after scoring. `StreamingEngine` owns
+per-entity rolling history, last fingerprint, hybrid evidence, alert cooldown,
+and adaptive profile state. The process-local convenience API reuses one engine;
+services can inject an explicitly managed engine.
 
 ## 5. Evaluation methodology
 

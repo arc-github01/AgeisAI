@@ -79,6 +79,7 @@ def test_performance_page_pending_without_evaluation():
     assert 'class="value pending">--' in body
     assert at.warning, "expected pending evaluation warning"
     assert "Evaluation not yet available" in at.warning[0].value
+    assert at.info and any("Evaluation / debug view" in block.value for block in at.info)
     captions = " ".join(block.value for block in at.caption)
     assert "Accuracy is intentionally absent" in captions
 

@@ -8,8 +8,8 @@ import streamlit as st
 
 from src.schema import ATTACK_CLASSES, EntityType, Severity
 
-from .components import KPI, kpi_row, page_header, panel_title, severity_badge
-from .contracts import ATTACK_DISPLAY_NAMES, ENTITY_TYPE_LABELS
+from .components import KPI, chips, kpi_row, page_header, panel_title, severity_badge
+from .contracts import ATTACK_DISPLAY_NAMES, ENTITY_TYPE_LABELS, REASON_CODE_LABELS
 from .data_provider import AlertQueueFilters, DashboardDataProvider
 from .state import DashboardContext
 
@@ -29,7 +29,10 @@ def _data_source_notice(provider: DashboardDataProvider) -> None:
             "Set `dashboard.data_source: mock` for frontend development."
         )
     else:
-        st.caption(f"Data source: {provider.source_label}")
+        st.caption(
+            f"Data source: {provider.source_label} · "
+            "predicted types are classifier hypotheses at inference time"
+        )
 
 
 def _build_filters() -> AlertQueueFilters:
@@ -46,7 +49,7 @@ def _build_filters() -> AlertQueueFilters:
     )
     attack_types = tuple(
         col_type.multiselect(
-            "Attack type",
+            "Predicted type",
             list(ATTACK_CLASSES),
             default=[],
             key="flt_attack",
@@ -90,6 +93,9 @@ def _render_detail(provider: DashboardDataProvider, alert_id: str) -> None:
     reasons = provider.parse_reasons(alert.get("reasons")) or provider.parse_reasons(
         alert.get("short_reason")
     )
+    reason_codes = provider.parse_reason_codes(alert)
+    confidence = alert.get("attack_confidence")
+    conf_txt = f"{float(confidence):.0%}" if confidence is not None else "—"
 
     left, right = st.columns([1, 1.25])
     with left:
@@ -99,33 +105,62 @@ def _render_detail(provider: DashboardDataProvider, alert_id: str) -> None:
             unsafe_allow_html=True,
         )
         st.markdown(f"**Alert ID:** `{alert.get('alert_id', '-')}`")
-        st.markdown(f"**Suspected attack:** {attack_label}")
+        if alert.get("event_id") is not None:
+            st.markdown(f"**Triggering event:** `{alert.get('event_id')}`")
+        st.markdown(f"**Predicted anomaly type:** {attack_label}")
+        st.markdown(f"**Classifier confidence:** {conf_txt}")
         st.markdown(
             f"**Entity:** `{alert.get('entity_id', '-')}` &nbsp; ({entity_type_label})"
         )
         st.markdown(f"**Observed:** {alert.get('timestamp', '-')}")
 
-        st.markdown("**Score breakdown**")
-        st.markdown(
-            f"- Behavioral anomaly: `{float(alert.get('anomaly_score', 0)):.3f}`  \n"
-            f"- Sequence anomaly: `{float(alert.get('sequence_score', 0)):.3f}`  \n"
-            f"- Classification confidence: `{float(alert.get('attack_confidence', 0)):.3f}`"
-        )
+        st.markdown("**Score inputs**")
+        anomaly = float(alert.get("anomaly_score", 0) or 0)
+        sequence = float(alert.get("sequence_score", 0) or 0)
+        score_lines = [
+            f"- Behavioral anomaly: `{anomaly:.3f}`",
+            f"- Classification confidence: `{float(confidence or 0):.3f}`",
+        ]
+        if sequence > 0:
+            score_lines.insert(1, f"- Sequence anomaly: `{sequence:.3f}`")
+        st.markdown("  \n".join(score_lines))
+
+        if reason_codes:
+            st.markdown("**Reason codes**")
+            labels = [
+                REASON_CODE_LABELS.get(code, code.replace("_", " ").title())
+                for code in reason_codes
+            ]
+            st.markdown(chips(labels), unsafe_allow_html=True)
 
         if reasons:
-            st.markdown("**Contributing factors**")
+            st.markdown("**Why this looked unusual**")
             items = "".join(f"<li>{html.escape(r)}</li>" for r in reasons)
             st.markdown(f"<ul style='margin-top:.2rem'>{items}</ul>", unsafe_allow_html=True)
         elif alert.get("short_reason"):
             st.markdown(f"**Reason:** {alert.get('short_reason')}")
 
+        event = provider.get_alert_event_context(alert)
+        if event is not None:
+            st.markdown("**Triggering activity**")
+            st.markdown(
+                f"`{event.get('resource_accessed', '-')}` · "
+                f"{event.get('city', '-')}, {event.get('country', '-')} · "
+                f"auth `{event.get('auth_method', '-')}` · "
+                f"device `{event.get('device_id', '-')}`"
+            )
+
     with right:
         from . import charts
 
-        panel_title("Score contributions")
+        panel_title("Risk contribution breakdown")
         st.plotly_chart(
             charts.contribution_bars(provider.get_score_contributions(alert)),
             width="stretch",
+        )
+        st.caption(
+            "Contributions come from persisted alert/risk artifacts — "
+            "the dashboard does not re-score on click."
         )
 
 
@@ -162,7 +197,7 @@ def render(ctx: DashboardContext) -> None:
     st.dataframe(queue_table, width="stretch", hide_index=True, height=420)
 
     st.write("")
-    panel_title("Alert detail")
+    panel_title("Alert investigation")
 
     options = filtered.head(page_size)
     choice_labels = {

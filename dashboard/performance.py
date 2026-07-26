@@ -56,6 +56,10 @@ def render(ctx: DashboardContext) -> None:
     kpis = provider.get_performance_kpis()
 
     page_header(TITLE, SUBTITLE)
+    st.info(
+        "**Evaluation / debug view** — metrics here use labelled evaluation "
+        "artifacts. They are not part of the operational analyst workflow."
+    )
 
     if not provider.has_evaluation_metrics():
         _pending_notice()
@@ -76,7 +80,10 @@ def render(ctx: DashboardContext) -> None:
         _empty_layout(budget)
         return
 
-    st.caption(f"Data source: evaluation artifact · {provider.get_performance_manifest().get('run_id', 'latest')}")
+    manifest = provider.get_performance_manifest() or {}
+    st.caption(
+        f"Data source: evaluation artifact · {manifest.get('run_id', 'latest')}"
+    )
     kpi_row(
         [
             KPI("PR-AUC", _fmt(kpis.pr_auc), foot="primary metric"),

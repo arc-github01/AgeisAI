@@ -8,6 +8,7 @@ import streamlit as st
 
 from . import charts
 from .components import KPI, kpi_row, panel_title, severity_badge
+from .contracts import ATTACK_DISPLAY_NAMES
 from .data_provider import DashboardDataProvider
 from .state import DashboardContext
 
@@ -34,10 +35,14 @@ def _data_source_notice(provider: DashboardDataProvider) -> None:
         st.info(
             "**Development fixture active** — dashboard data is synthetic frontend "
             "sample data, not measured model output. Switch `dashboard.data_source` "
-            "to `pipeline` in config once real alerts are available."
+            "to `pipeline` in config once real alerts are available, or leave `auto` "
+            "to pick up artifacts when present."
         )
     else:
-        st.caption(f"Data source: {provider.source_label}")
+        st.caption(
+            f"Data source: {provider.source_label} · "
+            "attack types below are classifier hypotheses, not ground truth"
+        )
 
 
 def _render_recent_critical(alerts) -> None:
@@ -46,10 +51,13 @@ def _render_recent_critical(alerts) -> None:
         return
     for row in alerts.itertuples(index=False):
         attack = getattr(row, "attack_type", "UNKNOWN")
+        attack_label = ATTACK_DISPLAY_NAMES.get(str(attack), str(attack).replace("_", " ").title())
+        confidence = getattr(row, "attack_confidence", None)
+        conf_txt = f"{float(confidence):.0%}" if confidence is not None else "—"
         st.markdown(
             f"{severity_badge(getattr(row, 'severity', 'CRITICAL'))} &nbsp; "
             f"**{getattr(row, 'entity_id', '-')}** &middot; "
-            f"{attack.replace('_', ' ').title()} &middot; "
+            f"{attack_label} ({conf_txt}) &middot; "
             f"Risk **{getattr(row, 'risk_score', 0):.0f}**  \n"
             f"<span style='color:#8b9bb0;font-size:.82rem'>"
             f"{html.escape(str(getattr(row, 'short_reason', '')))}</span>",
@@ -92,17 +100,28 @@ def render(ctx: DashboardContext) -> None:
 
     left, right = st.columns([1.15, 0.85])
     with left:
-        panel_title("Threat distribution")
+        panel_title("Predicted attack-type mix")
         st.plotly_chart(
             charts.attack_distribution(provider.get_threat_distribution()),
             width="stretch",
         )
+        st.caption("Classifier naming only — does not change risk scores.")
     with right:
-        panel_title("Severity distribution")
+        sev_source = provider.severity_distribution_source()
+        panel_title(
+            "Risk severity (scored events)"
+            if sev_source == "scored events"
+            else "Alert severity distribution"
+        )
         st.plotly_chart(
             charts.severity_donut(provider.get_severity_distribution()),
             width="stretch",
         )
+        if sev_source == "scored events":
+            st.caption(
+                "Across all scored events — not just the alert store "
+                "(alerts are a high-risk triage cut)."
+            )
 
     mid_left, mid_right = st.columns([1.35, 1])
     with mid_left:
@@ -116,7 +135,7 @@ def render(ctx: DashboardContext) -> None:
                     "entity_id": "Entity",
                     "type": "Type",
                     "risk_score": "Risk",
-                    "primary_signal": "Primary Signal",
+                    "primary_signal": "Predicted Type",
                 }
             )
             st.dataframe(display, width="stretch", hide_index=True, height=320)
@@ -127,5 +146,5 @@ def render(ctx: DashboardContext) -> None:
             width="stretch",
         )
 
-    panel_title("Recent critical alerts")
+    panel_title("Recent high-priority alerts")
     _render_recent_critical(provider.get_recent_critical_alerts(recent_n))

@@ -286,9 +286,11 @@ provenance. Non-finite values are sanitised to `null` before writing with
 **Context.** A demo feature that fakes its output would invalidate the whole
 demonstration, and placeholder code has a habit of surviving to the deadline.
 
-**Decision.** `simulator._run_injection()` raises `NotImplementedError` until it
-is wired to the real detection pipeline in Phase 11, the INJECT control is
-disabled until its prerequisite artifacts exist, and a test asserts both.
+**Decision.** `process_injection` raises `DetectionPipelineNotReadyError` until
+prerequisite artifacts exist and the streaming engine can load; the INJECT
+control stays disabled until those artifacts are present, and tests assert both.
+Phase 9 wires injection to the real `process_event` path — still never a
+fabricated alert.
 
 **Consequences.** It is impossible to ship a fake simulator by accident.
 
@@ -320,3 +322,358 @@ a sidebar radio rather than `st.navigation`, which `AppTest` drives reliably.
 
 **Consequences.** Every future phase gets an automatic regression check on the
 UI, including that pages survive the hardest case — no data at all.
+
+---
+
+## ADR-21 — `generator.days` is a hard horizon; the budget bends, not the calendar
+**Status:** Accepted (Phase 2)
+
+**Context.** The first engine met `target_events` by cycling past the end of the
+configured window, so a 21-day `dev` profile produced 186 days of data. Worse,
+it took the weekday from `day_offset % days` while stamping the event with the
+raw `day_offset`. With `days: 21` (exactly three weeks) that happened to align;
+with the `full` profile's 90 days it would have decoupled weekday behaviour from
+the actual date, quietly destroying the weekend signal.
+
+**Decision.** Simulate exactly `days` calendar days. Each entity's share of the
+event budget is spread across the days it is actually active — decided up front
+by `active_days()` — by raising its session rate, capped at `_DAILY_BURST_CAP`
+times its mean daily volume so a backlog cannot become an implausible burst.
+
+**Consequences.** Weekday structure stays aligned with real dates over any
+horizon, and the temporal train/test split covers the window the config asked
+for. Realised volume lands within ~1% of `target_events` rather than exactly on
+it; the achieved count is reported in the run summary rather than forced.
+
+---
+
+## ADR-22 — One entity, one event per second
+**Status:** Accepted (Phase 2)
+
+**Context.** The original scheduler computed a session step's minute as
+`base_minute + offset` and clamped it to 59 instead of carrying into the hour.
+Sessions could not cross an hour boundary and their later steps piled onto a
+single timestamp: 9% of rows shared an `(entity_id, timestamp)` key. Every
+planned feature that divides by the gap to an entity's previous event —
+geo-velocity, inter-event frequency, failed-attempts-per-window — would have
+divided by zero on those rows.
+
+**Decision.** Timestamps are real datetime arithmetic at second resolution.
+Sessions are laid out in non-overlapping slots across the entity's active
+window, and the window may run past midnight so a night shift is contiguous
+rather than truncated. A final `_deconflict_timestamps()` pass nudges any
+residual collision forward a second at a time, and a test asserts the invariant
+holds on the generated dataset.
+
+**Consequences.** "The previous event for this entity" is always well defined.
+Sequence and velocity features can be written without defensive special-casing.
+
+---
+
+## ADR-23 — The generator writes only to registered artifact paths
+**Status:** Accepted (Phase 2)
+
+**Context.** `src/artifacts.py` exists so a producing phase and a consuming
+phase cannot drift apart, but the generator ignored it and wrote
+`data/generated/normal_events.csv` while the registry — and the dashboard state
+layer watching it — expected `entities.json` and `events.parquet`. The entity
+population, the most reusable thing the generator builds, was never persisted at
+all.
+
+**Decision.** `save()` writes exclusively through `artifact_path()`. The entity
+roster is serialised to `entities.json` with its cohort resources, transition
+graph, devices and geography; events go to `events.parquet` in canonical
+`EVENT_COLUMNS` order. `event_id` is assigned after the global sort so it is
+chronological and reproducible — the previous `uuid4()` ids changed on every run
+despite the seed, which silently broke the reproducibility claim.
+
+**Consequences.** Phase 4 onward can load a fixed contract, and the console's
+build-status board reflects reality. Persisting the generator's ground-truth
+entity definition also lets evaluation ask how closely a *learned* profile
+recovers it.
+
+---
+
+## ADR-24 — Attacks are injected at mixed difficulty
+**Status:** Accepted (Phase 3)
+
+**Context.** The obvious way to build the seven injectors is to make each one
+unmistakable: brute force from Moscow at 3am, impossible travel across a
+continent, lateral movement straight onto a critical asset. That dataset is
+worthless for evaluation. Every attack would sit far outside its entity's
+baseline on several axes at once, an IsolationForest would separate it almost
+perfectly, and the PR-AUC we report would measure the generator's bluntness
+rather than the detector's skill. It would also teach the model nothing about the
+cases a real SOC actually misses.
+
+**Decision.** `generator.attacks.stealth_fraction` (0.35) of every type's
+campaigns is generated as a subtle variant. The defining signal is always
+preserved — a stealth impossible travel still exceeds
+`features.max_plausible_kmh`, a stealth spoof still presents an unregistered MAC
+— but the supporting signals that would make detection trivial are removed:
+stealth campaigns run during working hours, originate from egress points the
+population legitimately uses, keep known devices wherever the attack does not
+require otherwise, and trade volume for patience. Attack rows also reuse the
+benign vocabulary for `auth_method` and `action`, so no model can win by
+memorising an attacker-only category. `tests/test_attacks.py` asserts per type
+that the stealth variant is measurably less deviant than the obvious one.
+
+**Consequences.** Reported PR-AUC and recall-at-budget become meaningful, and the
+per-attack breakdown in `src/evaluation/` can show which behaviours are genuinely
+hard. The cost is that a headline metric will look worse than a uniformly blatant
+dataset would have produced, which is accepted deliberately.
+
+A second consequence is that the configured `campaigns` count per type became a
+preference rather than a guarantee. Prevalence and plausible campaign shape are
+the constraints that must hold, and they conflict at small dataset sizes: an
+obvious brute force cannot be shorter than its configured minimum attempt count,
+so 52 campaigns at 1.5% prevalence is arithmetically impossible in a 20k-event
+dataset. `AttackOrchestrator` therefore solves for the campaign count whose
+expected event total lands within 10% of the type's budget and is closest to the
+configured preference, and the run summary reports what was achieved.
+
+---
+
+## ADR-25 — Insider drift is labelled but is not an attack
+**Status:** Accepted (Phase 3)
+
+**Context.** Gradual expansion of an employee's resource footprint is
+simultaneously the behaviour most likely to trip a behavioural detector and the
+one most likely to be legitimate: a role change, a new project, a team
+reorganisation. `src/schema.py` already excludes `INSIDER_DRIFT` from
+`MALICIOUS_CLASSES` while keeping it in `ATTACK_CLASSES`. Phase 3 had to decide
+what the injector actually emits.
+
+**Decision.** Insider drift campaigns carry `label = INSIDER_DRIFT` and
+`is_attack = False`, and are generated as entirely plausible activity: normal
+working hours, the entity's own devices and network, successful authentication,
+lower-sensitivity resources from a neighbouring cohort, and a footprint that
+widens on a linear ramp rather than appearing all at once. They still receive a
+`campaign_id`.
+
+**Consequences.** `is_attack` stays exactly `label in MALICIOUS_CLASSES` for
+every row, so the binary detector is trained and scored against intrusions only.
+A detector that flags drift is counted as a false positive, which is the correct
+accounting and gives alert-budget tuning something real to trade against. Because
+the campaigns are still identified, evaluation can report drift recall separately
+as a sensitivity measure, and Phase 9 inherits a labelled concept-drift exhibit
+to demonstrate baseline adaptation against.
+
+---
+
+## ADR-26 — Frozen chronological BENIGN profiles for feature generation
+**Status:** Accepted (Phase 4)
+
+**Decision.** Phase 4 fits entity, cohort and transition profiles only from
+BENIGN events before the configured chronological training cutoff. All later
+events are scored against those frozen statistics; labels, campaign identifiers
+and stealth metadata remain evaluation-only metadata.
+
+**Consequences.** Feature values cannot absorb future behaviour or attack
+campaigns. Entities without enough pre-cutoff history fall back to their
+`(entity_type, role)` cohort profile, making cold-start behaviour explicit rather
+than silently using generator ground truth.
+
+---
+
+## ADR-27 — Unsupervised IsolationForest trained on benign-only history
+**Status:** Accepted (Phase 5)
+
+**Decision.** The anomaly detector (`src/models/`) fits a `StandardScaler` +
+`IsolationForest` on `MODEL_FEATURE_COLUMNS` for rows that are both benign and in
+the chronological training split. Labels are used only to *select* those rows and
+never enter the feature matrix. `random_state` is derived from `seed.master`, so
+the single master seed remains the only reproducibility knob.
+
+Scoring negates `score_samples` so higher always means more anomalous. Ranking
+metrics (PR-AUC, ROC-AUC) run on the raw, strictly monotonic score to avoid
+saturation; a separate min-max `anomaly_score` in [0, 1] exists only for display.
+Operating points (`strict`/`balanced`/`sensitive`) are quantiles of benign
+*training* scores, so no evaluation label ever influences a shipped threshold.
+
+**Consequences.** The detector is honestly unsupervised and leakage-free, at the
+cost of a rule baseline occasionally matching or beating it on obvious attacks —
+which is reported rather than hidden. Two reference detectors (seeded random and a
+benign-standardised rule sum) bound the result from below. Evaluation joins
+`campaigns.json` only at report time to produce campaign detection rate,
+time-to-detection, events-before-detection, and breakdowns by attack type,
+obvious-vs-stealth, and entity type.
+
+---
+
+## ADR-28 — Hybrid risk engine over a second supervised model
+**Status:** Accepted (Phase 6)
+
+**Decision.** Phase 6 does not add XGBoost, RandomForest, or a neural detector.
+It combines the validated IsolationForest score, the honest rule baseline,
+causal Phase 4 behavioural features, and entity-scoped exponential time decay
+into a saturating evidence score:
+
+```
+decayed   = S_prev * 0.5 ** (dt / halflife_seconds)
+E         = Σ weight_i * activation_i(event)          # instantaneous
+P         = persistence_weight * decayed              # history
+risk      = 100 * (1 - exp(-(E + P) / evidence_scale))
+S_new     = min(decayed + E, state_cap)
+```
+
+Activations are anchored on benign training-period quantiles and Phase 5
+operating points. Weights and `evidence_scale` encode a corroboration policy
+(one strong detector alone → MEDIUM; two agreeing → HIGH; sustained/multi-signal
+→ CRITICAL), not a fit against evaluation labels or known missed campaigns.
+Explanations are proportional shares of the evidence sum — they reconcile with
+the score by construction. Alerts page at CRITICAL by default (HIGH is a watch
+band); cooldown suppresses burst duplicates; severity escalation bypasses
+cooldown.
+
+**Why hybrid, and why IF still matters.** On the current synthetic set the rule
+baseline can beat IsolationForest on PR-AUC for obvious attacks. That is an
+acceptable and reported outcome: IF remains the novelty detector for behaviours
+rules were not hand-written to catch (notably lateral-movement style resource
+traversal). The hybrid's job is corroboration and temporal accumulation, not to
+paper over Phase 5.
+
+**Consequences.** Risk inputs are whitelist-guarded (`RISK_INPUT_COLUMNS`);
+labels/campaign metadata join only after scoring for evaluation. Streaming
+inference can reproduce the same state trajectory because decay is wall-clock
+and profiles/features remain causal. Alert burden and campaign detection are
+reported honestly against IF-alone and rule-alone baselines.
+
+---
+
+## ADR-29 — Supervised attack-type classifier is naming, not detection
+**Status:** Accepted (Phase 7)
+
+**Decision.** Phase 7 adds a RandomForest multi-class classifier over
+`BENIGN` + `ATTACK_CLASSES` (including `INSIDER_DRIFT` as an edge-case class),
+trained on chronological training-split rows using `MODEL_FEATURE_COLUMNS` only.
+`class_weight=balanced_subsample` addresses rarity. `random_state` is derived
+from `seed.master`. The classifier does **not** replace IsolationForest or the
+hybrid risk engine: those decide *whether* something is suspicious; this model
+proposes *what kind* of behaviour it looks like, with a confidence score.
+
+Predictions enrich alerts (`attack_type`, `attack_confidence`) but never enter
+`RISK_INPUT_COLUMNS` or IsolationForest features. Evaluation reports per-class
+precision/recall/F1, confusion matrix, malicious top-1 accuracy, and a binary
+attack-vs-benign view of the multi-class output.
+
+**Consequences.** Analysts get a named hypothesis on CRITICAL alerts. Mis-naming
+an attack type does not by itself open or suppress an alert. Class imbalance and
+rare types (especially on the `dev` profile) can yield uneven per-class F1; that
+is reported rather than hidden.
+
+---
+
+## ADR-30 — Adaptive profiles are separate from frozen Phase-4 baselines
+**Status:** Accepted (Phase 8)
+
+**Context.** Legitimate behaviour drifts (new devices, relocated users,
+`INSIDER_DRIFT`-style privilege expansion). An adaptive baseline that absorbs
+every event can be poisoned by an attacker who repeats the attack until it looks
+"normal". Offline `features.parquet` must remain leakage-safe: profiles used
+there were frozen from BENIGN history at or before the train/eval cutoff.
+
+**Decision.** Keep Phase-4 `ProfileBundle` frozen for offline features. Add a
+separate `AdaptiveProfileStore` (`src/drift/`) seeded from that bundle. Replay
+(or later stream) post-cutoff events in time order and update entity statistics
+with EWMA / decayed counts using `profiling.ewma_halflife_days`, but **only when
+`risk_score < drift.baseline_update_max_risk`**. The gate uses hybrid risk only —
+never attack labels — so evaluation metadata cannot steer adaptation. High-risk
+events leave the adaptive profile unchanged (poisoning resistance). Artifacts:
+`adaptive_profiles.joblib`, `drift_evaluation.json`. Offline features are not
+rewritten from adaptive state.
+
+**Consequences.** Concept drift is demonstrable (low-risk benign and many
+`INSIDER_DRIFT` events are absorbed; high-risk / most malicious campaigns are
+blocked). Stealthy attacks that score below the risk gate can still update —
+reported honestly as a residual gap rather than papered over with label-aware
+gating. Streaming `process_event` can later call the same update path without
+changing the offline leakage contract.
+
+---
+
+## ADR-31 — Streaming reuses offline models; state lives in the engine
+**Status:** Accepted (Phase 9)
+
+**Context.** The brief requires near-real-time feasibility: a single access event
+must flow through features → detection → risk → classification → explanation →
+alert → safe profile update without a batch job. Duplicating the offline
+pipeline would drift; fabricating alerts would invalidate the demo.
+
+**Decision.** `StreamingEngine.process_event` (and module-level `process_event`)
+is the sole streaming entry point. The module-level function reuses one
+process-local engine so repeated calls preserve state; services may own an
+explicit engine when they need controlled lifecycle or durable state. It:
+
+1. Strips labels / evaluation metadata and validates observation columns.
+2. Computes causal features via shared `compute_event_features` using only
+   prior per-entity history and the current profile view (frozen bundle, or
+   adaptive snapshot when drift updates are enabled).
+3. Scores with the persisted IsolationForest and the same rule baseline fit
+   recipe as Phase 5.
+4. Classifies with the persisted RandomForest (names only — does not alter risk).
+5. Updates hybrid risk / alert state through `RiskEngine.score_event` (same
+   formula as batch `score_frame`).
+6. Optionally applies Phase-8 risk-gated adaptive updates.
+
+`python -m src.detection` replays `events.parquet` one-by-one and records
+measured local latency (mean/p50/p95/p99) and throughput. Production rates are
+not extrapolated from that measurement.
+
+**Consequences.** Offline/streaming consistency holds when drift updates are
+disabled and histories are complete. Enabling adaptive updates intentionally
+diverges subsequent profile-derived features from frozen `features.parquet`.
+Out-of-order events for an entity raise `StreamingOrderError`. Live injection
+warms rolling history from the corpus then calls the same path.
+
+---
+
+## ADR-32 — Live simulator uses generator injectors + session alert overlay
+**Status:** Accepted (Phase 11)
+
+**Context.** Phase 9 wired `process_injection` to the real streaming engine, but
+the dashboard still synthesised attack rows from `mock_data` and never surfaced
+resulting alerts in Overview / Alert Queue / Entity Investigation.
+
+**Decision.** Add `src.generator.live_injection.synthesize_live_attack`, which
+rebuilds entity digital twins from `entities.json` via `record_to_profile` and
+calls the Phase 3 injectors. The simulator posts scored alerts into a Streamlit
+session overlay (`dashboard.live_state`) that `DashboardDataProvider` merges on
+read. Contribution charts use the real provider / `top_contributors` from the
+pipeline alert. Mock injection remains only as a fixture fallback when artifacts
+are absent.
+
+**Consequences.** Demo injections are honest mutations of real entities and
+appear in SOC pages for the session without rewriting parquet. Clearing the
+overlay restores the persisted artifact view.
+
+---
+
+## ADR-33 — Live campaigns are demo-scaled, not corpus-scaled
+**Status:** Accepted (Phase 11)
+
+**Context.** The first working live simulator reused the `config.yaml` campaign
+shapes unchanged. Those ranges are sized for a 21-90 day corpus, and two things
+broke when they were applied to a single interactive injection. Credential
+stuffing generated 141 events and took ~15s to score in the browser request,
+and insider drift generated ~79 events but had only the few days after the
+corpus to spread them over, arriving at ~13 events/day. A 35-day gradual
+privilege ramp delivered in under a week is not gradual: it presented as a
+resource-breadth explosion, the classifier named it `LATERAL_MOVEMENT`, and it
+raised 12 CRITICAL alerts — the exact opposite of the ambiguous, below-threshold
+edge case ADR-9 and ADR-25 define it to be.
+
+**Decision.** `src/generator/live_injection.py` holds `_LIVE_CAMPAIGN_SHAPES`,
+demo-scaled overrides merged over the attack config for live injections only.
+The injectors clamp against these same keys, so `campaign_size_range` continues
+to agree with what is actually generated. Credential stuffing is sized as
+victims x attempts because fan-out, not depth, is its defining shape. Slow-burn
+types no longer receive a `max_days` clamp: a live campaign has no simulation
+horizon to fit inside, so the day range governs and the ramp stays gradual.
+The offline dataset is untouched.
+
+**Consequences.** Every scenario now scores in under ~3s, and insider drift
+lands in the HIGH watch band without alerting, which is the documented intent.
+`tests/test_live_injection.py` pins campaign size, slow-burn density and
+stuffing fan-out so a future config change cannot silently restore the stall or
+the burst. `scripts/verify_live_demo.py` runs all seven scenarios end-to-end.

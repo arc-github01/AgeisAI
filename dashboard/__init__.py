@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from . import alerts, entity_view, overview, performance, simulator
+from . import alerts, entity_view, overview, performance, simulator, streaming
 from .data_provider import (
     AlertQueueFilters,
     AlertQueueSummary,
@@ -36,6 +36,7 @@ PAGES: tuple[Page, ...] = (
     Page("overview", "SOC Overview", overview.render),
     Page("alerts", "Alert Queue", alerts.render),
     Page("entity", "Entity Investigation", entity_view.render),
+    Page("streaming", "Streaming Replay", streaming.render),
     Page("simulator", "Attack Simulator", simulator.render),
     Page("performance", "Model Performance", performance.render),
 )
@@ -62,4 +63,5 @@ __all__ = [
     "overview",
     "performance",
     "simulator",
+    "streaming",
 ]

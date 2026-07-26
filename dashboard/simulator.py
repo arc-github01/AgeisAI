@@ -1,19 +1,21 @@
 """Live Attack Simulator.
 
-Injection synthesises real event(s), then delegates scoring to
-``src.detection.process_injection``. Until Phase 11 implements that pipeline,
-the UI shows the generated input events and an explicit not-ready message -
-never a fabricated alert.
+Injection synthesises real attack campaigns via ``src.generator.live_injection``,
+then scores them with ``src.detection.process_injection``. Until pipeline
+artifacts exist on disk, the UI shows prerequisites and never fabricates alerts.
+Successful runs also publish alerts into the SOC session overlay.
 """
 
 from __future__ import annotations
 
 import html
 
+import pandas as pd
 import streamlit as st
 
 from src.schema import ATTACK_CLASSES
 
+from . import charts, live_state
 from .components import page_header, panel_title, pipeline_strip, severity_badge
 from .contracts import ATTACK_DISPLAY_NAMES, ENTITY_TYPE_LABELS
 from .data_provider import DashboardDataProvider
@@ -47,23 +49,86 @@ def _render_entity_context(provider: DashboardDataProvider, entity_id: str) -> N
     )
 
 
-def _render_outcome(service: SimulatorService, outcome) -> None:
-    from . import charts
-    from .data_provider import DashboardDataProvider
+_SEVERITY_ORDER = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 
+
+def _render_scored_events(outcome) -> None:
+    """Per-event pipeline output, so a no-alert run still shows real scores."""
+    results = outcome.result.results if outcome.result else []
+    if not results:
+        return
+
+    frame = pd.DataFrame(
+        [
+            {
+                "Timestamp": r.timestamp,
+                "Entity": r.entity_id,
+                "Risk": round(r.risk_score, 1),
+                "Severity": r.severity,
+                "Predicted Type": ATTACK_DISPLAY_NAMES.get(
+                    r.predicted_attack_type, r.predicted_attack_type
+                ),
+                "Confidence": round(r.attack_confidence, 2),
+                "Alerted": r.alerted,
+                "Top reason": r.short_reason,
+                "Latency (ms)": round(r.latency_ms, 1),
+            }
+            for r in results
+        ]
+    )
+
+    peak = max(r.risk_score for r in results)
+    severity = max(
+        (r.severity for r in results),
+        key=lambda s: _SEVERITY_ORDER.index(s) if s in _SEVERITY_ORDER else -1,
+    )
+    alerted = sum(1 for r in results if r.alerted)
+    mean_latency = sum(r.latency_ms for r in results) / len(results)
+
+    cols = st.columns(4)
+    cols[0].metric("Events scored", len(results))
+    cols[1].metric("Peak risk", f"{peak:.0f}")
+    cols[2].metric("Peak severity", severity)
+    cols[3].metric("Mean latency", f"{mean_latency:.0f} ms")
+
+    st.dataframe(
+        frame.sort_values("Risk", ascending=False),
+        width="stretch",
+        hide_index=True,
+        height=260,
+    )
+
+    if alerted == 0:
+        st.info(
+            f"No alert raised: peak risk {peak:.0f} ({severity}) stayed below the "
+            "alerting threshold. Patient, low-signal campaigns are expected to "
+            "sit under the analyst alert budget — this is a real pipeline result, "
+            "not a failure."
+        )
+
+
+def _render_outcome(provider: DashboardDataProvider, outcome) -> None:
     if outcome.error:
         st.warning(outcome.error)
 
     st.markdown("**Generated injection events**")
     st.caption(
-        "These rows are the simulator input. They are not pre-scored alerts."
+        "These rows are synthesised by the real attack injectors — not pre-scored alerts."
     )
-    display = outcome.events.copy()
-    display["timestamp"] = display["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    st.dataframe(display, width="stretch", hide_index=True)
+    if outcome.events is not None and not outcome.events.empty:
+        display = outcome.events.copy()
+        display["timestamp"] = display["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        st.dataframe(display, width="stretch", hide_index=True, height=240)
+
+    panel_title("Pipeline output")
+    _render_scored_events(outcome)
 
     if outcome.result and outcome.result.alert is not None:
-        alert = outcome.result.alert
+        alert = (
+            outcome.result.alert.to_dict()
+            if hasattr(outcome.result.alert, "to_dict")
+            else dict(outcome.result.alert)
+        )
         st.markdown("**Pipeline alert**")
         st.markdown(
             f"{severity_badge(str(alert.get('severity', 'LOW')))} &nbsp; "
@@ -71,12 +136,22 @@ def _render_outcome(service: SimulatorService, outcome) -> None:
             f"{ATTACK_DISPLAY_NAMES.get(str(alert.get('attack_type', '')), alert.get('attack_type', '-'))}",
             unsafe_allow_html=True,
         )
-        provider = DashboardDataProvider(mode="mock")
-        st.plotly_chart(
-            charts.contribution_bars(provider.get_score_contributions(alert)),
-            width="stretch",
-        )
-    elif outcome.success and outcome.result:
+        if outcome.alerts_posted:
+            st.caption(
+                f"Posted {outcome.alerts_posted} alert(s) to Overview / Alert Queue "
+                f"for this session ({live_state.live_alert_count()} live overlay total)."
+            )
+        contributions = provider.get_score_contributions(alert)
+        if not contributions.empty:
+            st.plotly_chart(
+                charts.contribution_bars(contributions),
+                width="stretch",
+            )
+        reasons = alert.get("reasons")
+        if reasons:
+            st.markdown("**Why**")
+            st.write(reasons)
+    elif outcome.success and outcome.result and not outcome.result.results:
         st.info(outcome.result.message or "Pipeline completed without raising an alert.")
 
 
@@ -120,7 +195,7 @@ def render(ctx: DashboardContext) -> None:
             5,
             3,
             key="sim_intensity",
-            help="Scales the number of generated events and deviation strength.",
+            help="Scales campaign size; lower intensity uses stealthier variants.",
         )
         injected = st.button(
             "INJECT ATTACK",
@@ -129,6 +204,17 @@ def render(ctx: DashboardContext) -> None:
             disabled=not ready or not entity_ids,
             key="sim_inject",
         )
+        clear = st.button(
+            "Clear live overlays",
+            width="stretch",
+            disabled=live_state.live_alert_count() == 0
+            and live_state.live_events_frame().empty,
+            key="sim_clear",
+        )
+        if clear:
+            live_state.clear_live_overlays()
+            st.rerun()
+
         if not ready:
             st.caption(
                 "Injection unlocks when all prerequisite pipeline artifacts exist "
@@ -140,15 +226,27 @@ def render(ctx: DashboardContext) -> None:
 
     with right:
         panel_title("Detection path")
-        pipeline_strip(active=service.active_pipeline_stages())
+        stages = service.active_pipeline_stages()
+        if ready:
+            stages = stages | {
+                "EVENT",
+                "FEATURES",
+                "PROFILE",
+                "ANOMALY",
+                "CLASSIFIER",
+                "RISK",
+                "EXPLANATION",
+                "ALERT",
+            }
+        pipeline_strip(active=stages)
         st.caption(
-            "An injected event must traverse exactly this path - the same code that "
-            "scores the offline corpus. Nothing on this page is pre-computed."
+            "An injected event traverses the same ``process_event`` path that scores "
+            "the offline corpus. Nothing on this page is pre-computed."
         )
 
         if injected and entity_ids and entity_id in entity_ids:
-            with st.spinner("Generating events and invoking detection pipeline..."):
+            with st.spinner("Generating campaign and invoking detection pipeline..."):
                 outcome = service.run(entity_id, attack, intensity)
-            _render_outcome(service, outcome)
+            _render_outcome(provider, outcome)
         else:
             st.caption("Configure a scenario and inject to invoke the pipeline.")

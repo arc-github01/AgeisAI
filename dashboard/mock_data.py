@@ -16,7 +16,7 @@ import hashlib
 import numpy as np
 import pandas as pd
 
-from src.schema import ATTACK_CLASSES, EntityType, Severity
+from src.schema import ATTACK_CLASSES, IDENTITY_COLUMNS, OBSERVATION_COLUMNS, EntityType, Severity
 
 from .contracts import DASHBOARD_ALERT_COLUMNS, DASHBOARD_ENTITY_COLUMNS, DASHBOARD_EVENT_COLUMNS
 
@@ -47,6 +47,16 @@ CITIES = [
     ("Dallas", "US"),
     ("Frankfurt", "DE"),
 ]
+
+# Approximate coordinates so injection events satisfy the full observation schema.
+CITY_COORDS: dict[tuple[str, str], tuple[float, float]] = {
+    ("Chennai", "IN"): (13.0827, 80.2707),
+    ("Bengaluru", "IN"): (12.9716, 77.5946),
+    ("London", "GB"): (51.5074, -0.1278),
+    ("Singapore", "SG"): (1.3521, 103.8198),
+    ("Dallas", "US"): (32.7767, -96.7970),
+    ("Frankfurt", "DE"): (50.1109, 8.6821),
+}
 
 RESOURCES = [
     "email",
@@ -247,6 +257,15 @@ def _stable_device(entity_id: str) -> str:
     return f"DEV_{suffix:03d}"
 
 
+def _stable_mac(device_id: str) -> str:
+    digest = hashlib.md5(device_id.encode("utf-8")).hexdigest()
+    return ":".join(digest[i : i + 2] for i in range(0, 12, 2))
+
+
+def _city_coords(city: str, country: str) -> tuple[float, float]:
+    return CITY_COORDS.get((city, country), (0.0, 0.0))
+
+
 def _event_row(
     rng: np.random.Generator,
     *,
@@ -256,19 +275,32 @@ def _event_row(
     city: str,
     country: str,
 ) -> dict:
+    lat, lon = _city_coords(city, country)
+    device_id = _stable_device(entity["entity_id"])
     return {
         "event_id": f"EVT_{counter:06d}",
         "timestamp": ts,
         "entity_id": entity["entity_id"],
         "entity_type": entity["entity_type"],
+        "role": str(entity.get("role") or "unknown"),
         "source_ip": f"10.{rng.integers(0, 255)}.{rng.integers(0, 255)}.{rng.integers(1, 254)}",
         "city": city,
         "country": country,
+        "latitude": lat,
+        "longitude": lon,
         "resource_accessed": str(rng.choice(RESOURCES)),
+        "action": "access",
+        "command_sequence": "",
         "auth_method": str(rng.choice(AUTH_METHODS)),
         "auth_success": bool(rng.random() > 0.04),
         "session_duration": int(rng.integers(60, 7200)),
-        "device_id": _stable_device(entity["entity_id"]),
+        "session_duration_s": float(rng.integers(60, 7200)),
+        "bytes_transferred": float(rng.integers(500, 50_000)),
+        "device_id": device_id,
+        "device_os": "Windows",
+        "device_firmware": "1.0.0",
+        "device_protocol": "HTTPS",
+        "device_mac": _stable_mac(device_id),
     }
 
 
@@ -332,9 +364,8 @@ def generate_injection_events(
 ) -> pd.DataFrame:
     """DEVELOPMENT FIXTURE — synthesise attack events for simulator input only.
 
-    These rows are passed to ``src.detection.process_injection`` and are **not**
-    pre-scored alerts. Replace with generator-owned injection once the backend
-    exposes a live attack API.
+    The live simulator prefers generator-owned campaign synthesis when pipeline
+    artifacts exist. This helper remains for unit tests and fixture-only shells.
     """
     if attack_type not in ATTACK_CLASSES:
         raise ValueError(f"unknown attack type: {attack_type}")
@@ -362,6 +393,7 @@ def generate_injection_events(
         auth_success: bool,
         device_id: str | None = None,
         auth_method: str | None = None,
+        bytes_transferred: float | None = None,
     ) -> None:
         nonlocal counter
         counter += 1
@@ -370,9 +402,13 @@ def generate_injection_events(
         row["source_ip"] = source_ip
         row["resource_accessed"] = resource
         row["auth_success"] = auth_success
-        row["device_id"] = device_id or primary_device
+        chosen_device = device_id or primary_device
+        row["device_id"] = chosen_device
+        row["device_mac"] = _stable_mac(chosen_device)
         if auth_method:
             row["auth_method"] = auth_method
+        if bytes_transferred is not None:
+            row["bytes_transferred"] = float(bytes_transferred)
         rows.append(row)
 
     if attack_type == "BRUTE_FORCE":
@@ -467,7 +503,9 @@ def generate_injection_events(
 
     frame = pd.DataFrame(rows)
     frame["timestamp"] = pd.to_datetime(frame["timestamp"])
-    return frame[list(DASHBOARD_EVENT_COLUMNS)].sort_values("timestamp").reset_index(drop=True)
+    # Injection events must satisfy the full observation contract for process_event.
+    required = list(IDENTITY_COLUMNS + OBSERVATION_COLUMNS)
+    return frame.loc[:, required].sort_values("timestamp").reset_index(drop=True)
 
 
 def fixture_summary() -> dict[str, int | float]:

@@ -19,11 +19,10 @@ simulator meaningful — they all operate on the same causal structure.
 from __future__ import annotations
 
 import ipaddress
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import numpy as np
-from faker import Faker
 
 from src.schema import EntityType
 from src.utils.seeding import get_rng
@@ -464,17 +463,12 @@ def build_population(
     n_users: int,
     n_service_accounts: int,
     n_edge_devices: int,
-    noise_cfg: dict[str, Any] | None = None,
 ) -> list[EntityBehavioralProfile]:
     """Materialise the enterprise population as behavioural digital twins."""
     rng = get_rng("generator.entities")
     profiles: list[EntityBehavioralProfile] = []
 
     user_roles = _assign_roles(n_users, USER_ROLE_MIX, rng)
-    # Pad remaining users as developers (sales/marketing share dev-like tooling)
-    while len(user_roles) < n_users:
-        user_roles.append("developer")
-
     for idx, role in enumerate(user_roles[:n_users], start=1):
         cohort = COHORT_ARCHETYPES[role]
         eid = f"USR-{idx:04d}"
@@ -535,6 +529,142 @@ def build_population(
         )
 
     return profiles
+
+
+def profile_to_record(profile: EntityBehavioralProfile) -> dict[str, Any]:
+    """JSON-serialisable description of one entity's ground-truth behaviour.
+
+    This is the *generator's* definition of the entity, not the *learned*
+    profile that Phase 5 infers from observed events. Keeping both lets the
+    evaluation ask how closely a learned baseline recovers the truth.
+    """
+    cohort = profile.cohort
+    return {
+        "entity_id": profile.entity_id,
+        "entity_type": profile.entity_type.value,
+        "role": profile.role,
+        "home_country": profile.home_geo.country,
+        "home_city": profile.home_geo.city,
+        "home_latitude": profile.home_geo.latitude,
+        "home_longitude": profile.home_geo.longitude,
+        "ip_network": profile.ip_network,
+        "working_days": sorted(profile.working_days),
+        "preferred_login_hour": round(profile.preferred_login_hour, 4),
+        "primary_auth_method": profile.primary_auth_method,
+        "auth_methods": list(cohort.auth_methods),
+        "auth_failure_rate": cohort.auth_failure_rate,
+        "devices": [asdict(device) for device in profile.devices],
+        "resources": [asdict(resource) for resource in cohort.resources],
+        "resource_transitions": {
+            state: dict(options) for state, options in cohort.transitions.items()
+        },
+        "sessions_per_day_mean": cohort.sessions_per_day_mean,
+        "session_duration_mean_s": cohort.session_duration_mean_s,
+    }
+
+
+def record_to_profile(record: dict[str, Any]) -> EntityBehavioralProfile:
+    """Rebuild a behavioural profile from an ``entities.json`` roster row.
+
+    Prefers the role's cohort archetype (same digital-twin template used at
+    generation time) and restores personal geography, devices and auth from the
+    persisted record so live attack injection mutates the real entity.
+    """
+    entity_id = str(record["entity_id"])
+    role = str(record["role"])
+    entity_type = EntityType(str(record["entity_type"]))
+
+    if role in COHORT_ARCHETYPES:
+        cohort = COHORT_ARCHETYPES[role]
+    else:
+        resources = [
+            ResourceDef(
+                name=str(item["name"]),
+                action=str(item.get("action", "ACCESS")),
+                sensitivity=str(item.get("sensitivity", "medium")),
+                typical_bytes=int(item.get("typical_bytes", 4096)),
+            )
+            for item in record.get("resources", [])
+        ]
+        if not resources:
+            resources = [_arc("Corporate SSO", "LOGIN", "low", 512)]
+        transitions = {
+            str(state): {str(dst): float(prob) for dst, prob in options.items()}
+            for state, options in (record.get("resource_transitions") or {}).items()
+        }
+        cohort = CohortArchetype(
+            role=role,
+            entity_type=entity_type,
+            resources=resources,
+            transitions=transitions or {"START": {resources[0].name: 1.0}},
+            login_hour_mean=float(record.get("preferred_login_hour", 9.0)),
+            login_hour_std=0.8,
+            sessions_per_day_mean=float(record.get("sessions_per_day_mean", 1.5)),
+            session_steps_mean=4,
+            session_duration_mean_s=float(record.get("session_duration_mean_s", 1800.0)),
+            auth_methods=list(record.get("auth_methods") or [record.get("primary_auth_method", "SSO")]),
+            auth_failure_rate=float(record.get("auth_failure_rate", 0.03)),
+            weekend_activity_prob=0.05,
+            vpn_prob=0.08,
+            secondary_device_prob=0.08,
+        )
+
+    devices_raw = record.get("devices") or []
+    devices = [
+        RegisteredDevice(
+            device_id=str(item["device_id"]),
+            device_os=str(item.get("device_os", "Unknown")),
+            device_firmware=str(item.get("device_firmware", "UNKNOWN")),
+            device_protocol=str(item.get("device_protocol", "HTTPS")),
+            device_mac=str(item.get("device_mac", "00:00:00:00:00:00")),
+            is_primary=bool(item.get("is_primary", True)),
+        )
+        for item in devices_raw
+    ]
+    if not devices:
+        devices = _build_devices(entity_id, cohort, get_rng(f"generator.entity.{entity_id}"))
+
+    working = record.get("working_days")
+    working_days = set(int(day) for day in working) if working else set(range(5))
+
+    return EntityBehavioralProfile(
+        entity_id=entity_id,
+        entity_type=entity_type,
+        role=role,
+        cohort=cohort,
+        home_geo=GeoAnchor(
+            country=str(record.get("home_country", "India")),
+            city=str(record.get("home_city", "Chennai")),
+            latitude=float(record.get("home_latitude", 13.0827)),
+            longitude=float(record.get("home_longitude", 80.2707)),
+        ),
+        ip_network=str(record.get("ip_network", "10.0.0.0/24")),
+        working_days=working_days,
+        preferred_login_hour=float(record.get("preferred_login_hour", cohort.login_hour_mean)),
+        devices=devices,
+        primary_auth_method=str(
+            record.get("primary_auth_method") or cohort.auth_methods[0]
+        ),
+        rng=get_rng(f"generator.entity.{entity_id}"),
+    )
+
+
+def load_population_records(entities_doc: dict[str, Any] | list[Any]) -> list[EntityBehavioralProfile]:
+    """Load every entity profile from an ``entities`` artifact document."""
+    if isinstance(entities_doc, dict) and isinstance(entities_doc.get("entities"), list):
+        records = entities_doc["entities"]
+    elif isinstance(entities_doc, list):
+        records = entities_doc
+    else:
+        raise ValueError("entities artifact must be a list or {entities: [...]}")
+    return [record_to_profile(record) for record in records]
+
+
+def population_to_records(
+    profiles: list[EntityBehavioralProfile],
+) -> list[dict[str, Any]]:
+    """Serialise a whole population for the ``entities`` artifact."""
+    return [profile_to_record(profile) for profile in profiles]
 
 
 def random_ip_in_subnet(network_cidr: str, rng: np.random.Generator) -> str:
