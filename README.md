@@ -1,207 +1,16 @@
-# Quick Start: Get Up and Running with AgeisAI
+# AgeisAI Repository README
 
-This guide will walk you through setting up your environment and running basic AgeisAI functionalities.
+This document provides a concise overview of the AgeisAI repository, focusing on its setup, architecture, and core functionalities.
 
-## 1. Project Setup
+## 1. Project Overview
 
-AgeisAI follows a standard Python project structure. The core logic resides in the `src/` directory, while configuration and dashboard components are in their respective top-level folders.
+AgeisAI is a system designed for detecting anomalies and malicious activities within enterprise and OT environments. It processes access and connection events to engineer behavioral features, detect anomalies using Isolation Forest, and classify potential attacks. The system includes a Streamlit-based SOC console for visualization and analysis.
 
-### Repository Structure
+## 2. Setup and Installation
 
-```mermaid
-graph TD
-    A[AgeisAI Repository Root] --> B(src/);
-    A --> C(dashboard/);
-    A --> D(config/);
-    A --> E(docs/);
-    A --> F(tests/);
-    A --> G(README.md);
-    A --> H(project.md);
-    A --> I(app.py);
-    A --> J(requirements.txt);
-
-    B --> B1(generator/);
-    B --> B2(features/);
-    B --> B3(models/);
-    B --> B4(detection/);
-    B --> B5(profiling/);
-    B --> B6(explainability/);
-    B --> B7(adaptation/);
-
-    C --> C1(components.py);
-    C --> C2(theme.py);
-    C --> C3(overview.py);
-    C --> C4(alerts.py);
-    C --> C5(entity_view.py);
-    C --> C6(simulator.py);
-    C --> C7(performance.py);
-    C --> C8(replay_service.py);
-
-    D --> D1(config.yaml);
-
-    E --> E1(ARCHITECTURE.md);
-    E --> E2(DECISIONS.md);
-
-    F --> F1(test_smoke.py);
-    F --> F2(test_simulator.py);
-```
-
-### Installation
-
-Ensure you have Python 3.11+ installed.
-
-1.  **Create a virtual environment:**
-    ```bash
-    python -m venv .venv
-    ```
-
-2.  **Activate the environment:**
-    *   **Windows PowerShell:**
-        ```powershell
-        .venv\Scripts\activate
-        ```
-    *   **macOS / Linux:**
-        ```bash
-        source .venv/bin/activate
-        ```
-
-3.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-> [!TIP]
-> **Suggestion:** Consider using `pip-tools` for more robust dependency management, especially for larger projects. This allows for better pinning of versions and easier generation of `requirements.txt` from a `requirements.in` file.
-
-## 2. Running the Application
-
-AgeisAI provides a Streamlit-based dashboard for visualizing its capabilities.
-
-### Launching the Dashboard
-
-Navigate to the repository root in your terminal and run:
-
-```bash
-streamlit run app.py
-```
-
-This will launch the AgeisAI SOC console, typically accessible at `http://localhost:8501`.
-
-### Dashboard Overview
-
-The dashboard provides a comprehensive view of the system's status and capabilities. It's designed to be informative even before all data artifacts are generated.
-
-*   **Navigation:** Use the sidebar to switch between different pages (Overview, Alerts, Entity View, Simulator, Performance).
-*   **Status Indicators:** The sidebar displays the status of prerequisite artifacts, indicating which phase produces them and the command to generate them.
-
-```mermaid
-flowchart LR
-    A[User] --> B(Browser);
-    B --> C{Streamlit Server};
-    C --> D[Dashboard Pages];
-    D --> E{Data Provider};
-    E --> F[Configuration];
-    E --> G[Artifacts Store];
-    G --> H(Models);
-    G --> I(Profiles);
-    G --> J(Events);
-    F --> K[Generator Settings];
-    K --> J;
-```
-
-The dashboard's theme is managed by `dashboard/theme.py`, ensuring a consistent visual language across all components.
-
-```python
-# source: dashboard/theme.py:L10-L20
-def apply() -> None:
-    """Inject the stylesheet and register the Plotly template. Idempotent."""
-    _register_plotly_template()
-    st.markdown(_CSS, unsafe_allow_html=True)
-
-# ... (rest of the theme.py file)
-```
-
-## 3. Core Functionality: Event Processing
-
-The heart of AgeisAI is its ability to process events, generate features, and detect anomalies.
-
-### The `process_event` Function
-
-This function orchestrates the entire detection pipeline for a single event.
-
-```python
-# source: src/detection/detector.py:L10-L25
-def process_event(
-    event: pd.Series,
-    ctx: DetectionContext,
-) -> DetectionResult:
-    """Process a single event through the detection pipeline."""
-    # 1. Load entity profile
-    profile = ctx.profile_store.get(event.entity_id)
-    if profile is None:
-        # Handle cold start or missing profile
-        profile = ctx.profile_store.get_cohort(event.entity_type) # Example
-
-    # 2. Calculate features
-    features = ctx.feature_engine.transform(event, profile)
-
-    # 3. Run anomaly model
-    anomaly_score = ctx.anomaly_model.predict(features)
-
-    # 4. Run sequence scoring (if applicable)
-    sequence_score = ctx.sequence_model.score(event, profile)
-
-    # 5. Run classifier
-    attack_prediction = ctx.attack_classifier.predict(features)
-
-    # 6. Calculate risk and generate explanations
-    risk_score, explanations = ctx.risk_engine.calculate(
-        event, features, anomaly_score, sequence_score, attack_prediction
-    )
-
-    # 7. Create alert object and determine threshold
-    alerted = risk_score >= ctx.alert_threshold
-    alert = Alert(
-        event_id=event.event_id,
-        entity_id=event.entity_id,
-        timestamp=event.timestamp,
-        risk_score=risk_score,
-        severity=ctx.severity_mapper.map(risk_score),
-        explanations=explanations,
-        alerted=alerted,
-    )
-
-    # 8. Add safe profile-update decision
-    if ctx.profile_updater.should_update(event, profile, alerted):
-        ctx.profile_store.update(event.entity_id, profile)
-
-    return DetectionResult(alert=alert, alerted=alerted, latency_ms=ctx.latency_ms)
-
-```
-
-> [!IMPORTANT]
-> **Critical Improvement:** The `process_event` function should explicitly handle the case where `profile` is `None` after attempting to retrieve both personal and cohort profiles. Currently, it proceeds with a potentially `None` profile, which will likely cause downstream errors. A clear strategy for handling completely unknown entities (e.g., logging an error, assigning a default "unknown" profile) is needed.
-
-## 4. Next Steps
-
-*   **Explore the Dashboard:** Familiarize yourself with the different pages and visualizations.
-*   **Run the Simulator:** Use the "Attack Simulator" page to inject synthetic attacks and observe detection.
-*   **Examine Configuration:** Review `config/config.yaml` to understand tunable parameters.
-*   **Dive Deeper:** Refer to `project.md` for a detailed breakdown of development phases and `docs/ARCHITECTURE.md` for architectural decisions.
-
-
-
-# AgeisAI Installation Guide
-
-This guide outlines the straightforward installation and execution process for the AgeisAI project. Due to its "run-in-place" design, there's no traditional installation step. You'll primarily focus on setting up your environment and then running the application directly from the repository root.
-
-## 1. Project Setup
-
-AgeisAI is designed to be run directly from the repository without a formal installation process. This is achieved by ensuring the repository root is added to the Python path.
+To set up and run AgeisAI, ensure you have Python 3.11+ installed.
 
 ### Environment Setup
-
-First, create and activate a Python virtual environment.
 
 ```bash
 # Create a virtual environment
@@ -212,247 +21,320 @@ python -m venv .venv
 .venv\Scripts\activate
 # macOS / Linux:
 # source .venv/bin/activate
-```
 
-### Install Dependencies
-
-Install all necessary Python packages using the provided `requirements.txt` file.
-
-```bash
-# source: README.md:L15
+# Install dependencies
 pip install -r requirements.txt
+
+# Run tests (optional, but recommended)
+pytest -q
 ```
 
-> [!TIP]
-> **Suggestion:** Regularly update `requirements.txt` to reflect the latest dependencies and ensure reproducibility. Consider using tools like `pip-freeze` or dependency management solutions for more robust management.
+### Running the SOC Console
 
-## 2. Running the Application
-
-Once dependencies are installed, you can launch the AgeisAI SOC console.
-
-### Launching the SOC Console
-
-The console is launched using `streamlit` from the repository's root directory.
+The Streamlit console provides a user interface for monitoring and analysis.
 
 ```bash
-# source: README.md:L20
 streamlit run app.py
 ```
 
-This command will start the Streamlit server, and you can access the SOC console by navigating to `http://localhost:8501` in your web browser.
+The console will launch at `http://localhost:8501`. It's designed to show the readiness of data artifacts and the commands needed to generate them, even before any data exists.
 
-### Data Handling
+> [!TIP]
+> All tunable parameters are managed in `config/config.yaml`. For reproducible runs, `seed.master` is used. The `generator.profile` setting allows switching between a small `dev` dataset and the `full` one.
 
-The console intelligently handles data sources:
-*   **Default Behavior:** If `events` and `alerts` artifacts exist, it prefers real pipeline data.
-*   **Fallback:** If real data is not available, it gracefully falls back to a clearly labeled development fixture.
+## 3. Repository Structure
 
-## 3. Project Structure and Execution Flow
-
-AgeisAI utilizes a `src/` layout and a root `conftest.py` to manage imports and execution from the repository root.
-
-### Run-in-Place Layout
-
-The project is structured to be run directly from the root directory. A `conftest.py` file at the root ensures that the `src/` directory is importable by adding it to `sys.path`.
-
-```python
-# source: conftest.py:L10-L15
-"""Makes the repository root importable so tests can ``import src.*``.
-
-Kept at the root (rather than shipping a packaging config) because the project
-is run in place: ``pytest``, ``python -m src...`` and ``streamlit run app.py``
-all execute from the repository root.
-"""
-
-from __future__ import annotations
-
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-```
-
-This approach simplifies setup, as no explicit installation or packaging is required.
-
-### Execution Diagram
-
-The following diagram illustrates the general flow of execution and module dependencies within AgeisAI, highlighting how different components interact.
+The repository is organized to facilitate modular development and clear separation of concerns.
 
 ```mermaid
 flowchart TD
-    A[Repository Root] --> B(Install Dependencies: pip install -r requirements.txt)
-    B --> C(Launch SOC Console: streamlit run app.py)
-    C --> D{Data Source Check}
-    D -- Real Data Exists --> E[Load Pipeline Artifacts]
-    D -- No Real Data --> F[Load Development Fixture]
-    E --> G[SOC Dashboard]
-    F --> G
-    G --> H(http://localhost:8501)
+    A[aegis/] --> B(app.py);
+    A --> C(README.md);
+    A --> D(PROJECT_PLAN.md);
+    A --> E(requirements.txt);
+    A --> F(config/);
+    A --> G(data/);
+    A --> H(models/);
+    A --> I(src/);
+    A --> J(tests/);
+    A --> K(docs/);
 
-    subgraph Core Logic
-        I[src/generator] --> J[src/features]
-        J --> K[src/models]
-        K --> L[src/risk]
-        L --> M[src/detection]
-        M --> N[src/drift]
-    end
+    F --> F1(config.yaml);
 
-    subgraph Artifacts & Configuration
-        O[config/config.yaml]
-        P[src/artifacts.py]
-        Q[data/]
-        R[models/]
-        S[artifacts/]
-    end
+    G --> G1(raw/);
+    G --> G2(processed/);
+    G --> G3(generated/);
 
-    J --> P
-    K --> P
-    L --> P
-    N --> P
-    P --> Q
-    P --> R
-    P --> S
+    I --> I1(generator/);
+    I --> I2(profiling/);
+    I --> I3(features/);
+    I --> I4(models/);
+    I --> I5(detection/);
+    I --> I6(explainability/);
+    I --> I7(adaptation/);
+    I --> I8(schema.py);
+    I --> I9(artifacts.py);
+    I --> I10(evaluation/);
 
-    style A fill:#1A202C,stroke:#4A5568,stroke-width:2px,color:#E2E8F0
-    style B fill:#2D3748,stroke:#4A5568,stroke-width:2px,color:#E2E8F0
-    style C fill:#2D3748,stroke:#4A5568,stroke-width:2px,color:#E2E8F0
-    style D fill:#1F2937,stroke:#374151,stroke-width:2px,color:#E2E8F0
-    style E fill:#2A4365,stroke:#4A5568,stroke-width:2px,color:#E2E8F0
-    style F fill:#2A4365,stroke:#4A5568,stroke-width:2px,color:#E2E8F0
-    style G fill:#63B3ED,stroke:#4FD1C7,stroke-width:2px,color:#1A202C
-    style H fill:#63B3ED,stroke:#4FD1C7,stroke-width:2px,color:#1A202C
+    I1 --> I1a(entities.py);
+    I1 --> I1b(normal_behavior.py);
+    I1 --> I1c(attacks.py);
+    I1 --> I1d(generator.py);
+
+    I2 --> I2a(entity_profile.py);
+    I2 --> I2b(cohort_profile.py);
+
+    I3 --> I3a(behavioral.py);
+    I3 --> I3b(geographic.py);
+    I3 --> I3c(temporal.py);
+    I3 --> I3d(sequence.py);
+
+    I4 --> I4a(anomaly_detector.py);
+    I4 --> I4b(attack_classifier.py);
+    I4 --> I4c(sequence_model.py);
+
+    I5 --> I5a(detector.py);
+    I5 --> I5b(risk_engine.py);
+    I5 --> I5c(engine.py);
+
+    I6 --> I6a(explainer.py);
+
+    I7 --> I7a(cold_start.py);
+    I7 --> I7b(drift.py);
+
+    J --> J1(conftest.py);
+    J --> J2(test_smoke.py);
+    J --> J3(test_attacks.py);
+    J --> J4(test_drift.py);
+    J --> J5(test_dashboard_shell.py);
+
+    K --> K1(DECISIONS.md);
+    K --> K2(ARCHITECTURE.md);
 ```
 
-## 4. Key Components and Artifacts
+### Key Directories and Files:
 
-AgeisAI's functionality is organized into distinct phases, each producing specific artifacts. The `src/artifacts.py` module serves as a central registry for all pipeline outputs.
+*   **`app.py`**: Streamlit entry point for the SOC console.
+*   **`config/config.yaml`**: The single source of truth for all tunable parameters.
+*   **`src/`**: Contains the core library code for the AgeisAI system.
+    *   **`schema.py`**: Defines the canonical event contract, threat taxonomy, and leakage guards.
+    *   **`artifacts.py`**: Registers all pipeline outputs, their producing phases, and creation commands.
+    *   **`generator/`**: Code for generating synthetic datasets.
+    *   **`profiling/`**: Modules for creating entity and cohort behavioral profiles.
+    *   **`features/`**: Feature engineering components (behavioral, geographic, temporal, sequence).
+    *   **`models/`**: Machine learning models for anomaly detection and attack classification.
+    *   **`detection/`**: Modules for real-time anomaly detection and risk scoring.
+    *   **`evaluation/`**: Imbalance-aware metrics and reporting tools.
+*   **`dashboard/`**: Components for the Streamlit SOC console.
+*   **`tests/`**: Pytest suite for various aspects of the system.
+*   **`docs/`**: Project documentation, including Architecture Decision Records (ADRs) and architecture diagrams.
+*   **`data/`**: Stores generated datasets (git-ignored).
+*   **`models/`**: Persisted models and entity profiles (git-ignored).
+*   **`artifacts/`**: Stores alerts, evaluation figures, and metric exports (git-ignored).
 
-### Artifact Registry
+## 4. Data Schema
 
-The `src/artifacts.py` file defines all outputs generated by the pipeline, including their location, the phase that produces them, and the command used for their creation. This ensures consistency and traceability.
-
-```python
-# source: src/artifacts.py:L10-L20
-    Artifact(
-        key="feature_validation",
-        directory="artifacts",
-        filename="feature_validation.json",
-        phase=4,
-        produced_by="python -m src.features",
-        description="Feature sanity and leakage validation summary",
-    ),
-    Artifact(
-        key="anomaly_detector",
-        directory="models",
-        filename="anomaly_detector.joblib",
-        phase=6,
-        produced_by="python -m src.models.anomaly_detector",
-        description="IsolationForest detector bundle (preprocessing + model + feature order + config)",
-    ),
-    Artifact(
-        key="anomaly_thresholds",
-        directory="models",
-        filename="anomaly_thresholds.json",
-        phase=6,
-        produced_by="python -m src.models.anomaly_detector",
-        description="Calibrated operating-point thresholds and methodology",
-    )
-```
-
-> [!TIP]
-> **Suggestion:** The artifact registry is crucial for understanding pipeline dependencies. Consider adding a diagram visualizing these dependencies to the documentation for easier comprehension.
-
-### Module Map
-
-The project's modules are organized within the `src/` directory, each responsible for a specific aspect of the AI pipeline.
+The system processes access events with a defined schema. Ground-truth fields (`is_anomaly`, `attack_type`) are critical and must never be used as model input features.
 
 ```mermaid
-graph TD
-    A[src/config.py] --> B(YAML Configuration)
-    C[src/paths.py] --> D(Project Paths)
-    E[src/schema.py] --> F(Event Contract)
-    G[src/artifacts.py] --> H(Artifact Registry)
-    I[src/utils/] --> J(Utilities: seeding, geo, logging)
-    K[src/evaluation/] --> L(Metrics & Reporting)
-    M[src/generator/] --> N(Data Generation)
-    O[src/features/] --> P(Feature Engineering)
-    Q[src/profiling/] --> R(Baselines & Cold Start)
-    S[src/models/] --> T(Anomaly & Attack Models)
-    U[src/risk/] --> V(Risk Engine & Explanations)
-    W[src/drift/] --> X(Adaptive Profiles & Drift)
-    Y[src/detection/] --> Z(Streaming Processing)
-    AA[dashboard/] --> BB(SOC Console)
-
-    classDef module fill:#2D3748,stroke:#4A5568,stroke-width:2px,color:#E2E8F0
-    class A,C,E,G,I,K,M,O,Q,S,U,W,Y,AA module
+erDiagram
+    Events {
+        string event_id PK
+        string entity_id
+        string entity_type
+        string department
+        string role
+        datetime timestamp
+        string source_ip
+        string geo_location
+        float latitude
+        float longitude
+        string device_id
+        string device_os
+        string device_fingerprint
+        string resource_accessed
+        string resource_sensitivity
+        string auth_method
+        boolean auth_success
+        int session_duration
+        string protocol
+        int bytes_transferred
+        string command_sequence
+        boolean is_anomaly
+        string attack_type
+        string campaign_id
+    }
 ```
 
-This setup allows for a clear separation of concerns and facilitates code exploration by providing a structured overview of the project's components.
+> [!WARNING]
+> **Critical Rule:** Ground-truth fields (`is_anomaly`, `attack_type`) must **never** be accidentally included in the feature space. They are strictly for training and evaluation.
 
+## 5. Technology Stack
 
-## Running the Application
-
-The AEGIS analyst console provides a real-time interface for monitoring and investigating security events. It's built using Streamlit, allowing for rapid development and deployment of interactive dashboards.
-
-### Launching the Console
-
-To run the application, navigate to the repository root in your terminal after installing dependencies.
-
-```bash
-# source .venv/bin/activate  # macOS / Linux
-.venv\Scripts\activate      # Windows PowerShell
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-This command will launch the Streamlit application, and you can access the console by opening your web browser to `http://localhost:8501`.
-
-### Data Sources
-
-The console intelligently selects its data source:
-
-*   **Default Behavior:** When `dashboard.data_source: auto` is set (the default), the console prioritizes real pipeline artifacts if both `events` and `alerts` data exist.
-*   **Development Fallback:** If real pipeline artifacts are not available, the console gracefully falls back to using clearly labeled development fixtures. This ensures the dashboard is always functional, even during early development stages.
-
-### Console Overview
-
-The console is designed to provide a comprehensive view of security events and potential threats.
+The project prioritizes a simple and manageable technology stack.
 
 ```mermaid
 flowchart LR
-    A[Repository Root] --> B(Install Dependencies);
-    B --> C{Run Streamlit};
-    C --> D[http://localhost:8501];
-    D --> E{Analyst Console};
-    E --> F{Data Source Logic};
-    F -- Real Artifacts --> G[Events & Alerts];
-    F -- Fallback --> H[Development Fixtures];
+    A[Python] --> B(Pandas);
+    A --> C(NumPy);
+    A --> D(Faker);
+    A --> E(scikit-learn);
+    A --> F(Plotly);
+    A --> G(Streamlit);
+    A --> H(joblib);
+    A --> I(Parquet / CSV);
+    A --> J(pytest);
+
+    E --> K(Isolation Forest);
+    E --> L(Random Forest);
+    E --> M(Markov transition probabilities);
 ```
 
-The console is structured into several pages, each serving a specific purpose:
+**Avoid:** TensorFlow, PyTorch, Transformers, Kafka, Redis, React, FastAPI, Docker, LLM APIs, Databases, Cloud services (initially).
 
-| Page                | Purpose                                                                                             |
-| :------------------ | :-------------------------------------------------------------------------------------------------- |
-| SOC Overview        | Risk summary, severity/attack mix, top entities, recent high-priority alerts                        |
-| Alert Queue         | Ranked triage list with filters + explainable alert detail                                          |
-| Entity Investigation| Baseline profile, risk evolution, alert reasons, event history                                      |
-| Streaming Replay    | Reliable batch demo of Phase 9 `process_event()` (optional)                                         |
-| Attack Simulator    | Inject a real generator campaign through `process_event`; alerts join the SOC session overlay       |
-| Model Performance   | Evaluation/debug metrics from Phase 12 artifacts only                                               |
+## 6. Architecture Overview
 
-### Verifying Live Demonstration
+The AgeisAI architecture processes events through several phases, culminating in anomaly detection, risk assessment, and visualization.
 
-Before presenting, it's crucial to verify the live demonstration end-to-end. This process runs all seven attack scenarios through the real detection pipeline and reports risk, severity, and latency for each.
+```mermaid
+flowchart TD
+    subgraph Synthetic Enterprise/OT Environment
+        A[Access & Connection Events]
+    end
+
+    A --> B(Event Processing);
+    B --> C(Behavioral Feature Engineering);
+
+    subgraph Feature Engineering
+        C --> D(Entity Behavioral Profiles);
+        D --> E(Statistical Deviation);
+        C --> F(Sequence Model);
+        F --> G(Transition Anomaly);
+    end
+
+    E --> H(IsolationForest Anomaly Detection);
+    G --> H;
+
+    H --> I(Risk Engine);
+    I --> J(Attack Classifier);
+    I --> K(Explainability);
+
+    J --> L(Alert Store);
+    K --> L;
+
+    L --> M(Streamlit SOC UI);
+
+    subgraph Documentation
+        N(docs/ARCHITECTURE.md)
+        O(docs/DECISIONS.md)
+    end
+```
+
+### Key Architectural Decisions:
+
+*   **Single Artifact Registry (`src/artifacts.py`)**: Ensures consistency between producers and consumers of pipeline outputs.
+*   **Config-as-Single-Source-of-Truth (`config/config.yaml`)**: All tunable parameters are managed centrally.
+*   **Headless Console Verification (`tests/test_dashboard_shell.py`)**: Ensures the UI remains functional even with no data.
+
+## 7. Offline Detection Pipeline
+
+The offline pipeline processes data in distinct stages, each executable via a command-line interface.
+
+```mermaid
+flowchart TD
+    A[python -m src.features] --> B(Causal Features + Frozen Profiles);
+    B --> C[python -m src.models.anomaly_detector];
+    C --> D(IsolationForest + Phase 5 Metrics);
+    D --> E[python -m src.models.attack_classifier];
+    E --> F(Attack-Type Classifier + Metrics);
+    F --> G[python -m src.risk];
+    G --> H(Hybrid Risk Scores, Alerts, Metrics);
+    H --> I[python -m src.drift];
+    I --> J(Risk-Gated Adaptive Profiles + Drift Eval);
+    J --> K[python -m src.detection];
+    K --> L(Streaming Replay + Latency Metrics);
+```
+
+For long-lived event streams, you can either use the stateful module interface or manage the engine explicitly.
+
+```python
+# source: src/detection/engine.py:L50-L65
+from src.detection import StreamingEngine, process_event
+
+# Process events with a local, reused engine
+result = process_event(event)
+
+# Explicit lifecycle control for services/tests
+engine = StreamingEngine.load(apply_drift_updates=True)
+result = process_event(event, engine=engine)
+```
+
+The `result` object contains anomaly/risk scores, severity, classifier hypotheses, explanations, alert outcomes, profile source, and adaptive update decisions.
+
+## 8. Dataset Generation
+
+Synthetic datasets can be generated for development and testing.
 
 ```bash
-python scripts/verify_live_demo.py
+# Generate dev profile with attacks injected
+python -m src.generator
+
+# Generate full profile with attacks injected
+python -m src.generator --profile full
+
+# Generate only benign data (no campaigns)
+python -m src.generator --benign-only
 ```
 
-This script ensures that the entire detection pipeline, from event generation to alert surfacing, functions as expected.
+This process creates `data/generated/entities.json` (ground-truth entity definitions) and `data/generated/events.parquet` (labelled event dataset).
+
+> [!TIP]
+> The generator reports the *achieved* attack prevalence and campaign counts, which may differ from configured targets due to clamping campaign sizes to plausible shapes.
+
+## 9. Attack Taxonomy
+
+The system is designed to detect various attack types.
+
+### Attack Types:
+
+*   **Brute Force**: Multiple authentication attempts from one source in a short period.
+*   **Impossible Travel**: Physically implausible geographic velocity between events.
+*   **Credential Stuffing**: Small number of attacker IPs targeting many entity IDs with failed authentications.
+*   **Lateral Movement**: Compromised entity accessing unusual resources sequentially.
+*   **Device Spoofing**: Known entity using an unexpected device fingerprint.
+*   **Low-and-Slow Exfiltration**: Gradual increase in unusual resource access/data transfer over time.
+*   **Insider Drift**: Slow, legitimate expansion of an entity's resource/privilege footprint.
+
+## 10. Detection Mechanisms
+
+### Anomaly Detection
+
+The primary anomaly detection model is **Isolation Forest**. It quantifies how unusual an event is, returning a normalized `anomaly_score` between 0 and 1.
 
 > [!IMPORTANT]
-> **Critical Improvement:** The `verify_live_demo.py` script should ideally integrate with the testing framework (`pytest`) to provide automated verification of the live demo's core functionality. This would ensure consistency and prevent regressions.
+> Ground-truth labels are **not** used to train the unsupervised anomaly detector.
 
+### Sequence Model
 
+A simple sequence model based on **resource-transition probabilities** is used to identify unusual sequences of actions. This converts uncommon transitions into a `sequence_anomaly_score`.
+
+Example: `LOGIN → EMAIL (P = 0.71)` vs. `LOGIN → ADMIN_DATABASE (P = 0.002)`.
+
+### Attack Classifier
+
+A **Random Forest** model is employed to classify the *type* of attack. Its role is distinct from the anomaly detector:
+
+*   **Isolation Forest**: "Something is strange."
+*   **Random Forest**: "This resembles lateral movement."
+
+It outputs `predicted_attack` and `attack_confidence`.
+
+## 11. Documentation and Decisions
+
+Key architectural decisions and design justifications are recorded in the `docs/` directory.
+
+*   **`docs/ARCHITECTURE.md`**: Provides detailed architecture diagrams and component walkthroughs.
+*   **`docs/DECISIONS.md`**: Contains Architecture Decision Records (ADRs) documenting significant design choices and their rationale.
+
+> [!TIP]
+> ADR-14 (Single artifact registry) and ADR-7 (Config-as-single-source-of-truth) are fundamental to the project's maintainability and reproducibility.
